@@ -8872,3 +8872,33 @@ Guarded by `crates/ohl-engine/tests/monster_transform_sync.rs`:
 `a_centred_origin_prop_keeps_its_placement`, and the two existing sync
 tests, which now assert the lift between `Actor` and `Transform` (walking,
 and straight after a save loads).
+
+
+## M9.NEXT — Major-fracture HEV sentence adapter
+
+The directly reviewed public [Combine OverWiki HEV Quotes page, Vital signs](https://combineoverwiki.net/wiki/Hazardous_Environment_Suit/Quotes#Vital_signs)
+(live page reports revision 489605, directly reviewed 2026-10-09) identifies
+`HEV_DMG5` with major fracture. This extends M9.55's admitted identifiers by
+that one association. The archived revision URL was unavailable in the public
+review; this citation records the live-page retrieval, not an archived one.
+Only the identifier and broad association are used; no dialogue, audio, word
+list, WAV path or external implementation is copied. The page includes unused
+material, so its listing alone does not verify an original in-game trigger.
+
+`SuitOccasion::MajorFracture` now resolves `HEV_DMG5` through the existing
+runtime `SentenceLookup`. The three previous mappings, unresolved-cue silence,
+Voice routing, gain/pitch, channels, mixer and complete Suit metadata stay as
+before. The existing Blast/Crush producer association, suit eligibility,
+cooldown and thresholds remain project-authored policy. Immediate playback
+and same-owner replacement also remain project-authored. **`TODO(black-box)`**:
+original producer rules, thresholds, scheduling, priority, delay, channel,
+interruption and repeat behavior. No trigger bit is inferred.
+
+The existing fixture gains newly project-authored `ohl/fracture_alpha` and
+`ohl/fracture_beta` tokens. Separate fresh suited players exercise real
+`Player::apply_damage` for Blast and Crush; tests inspect presentation Sound,
+ordered words and unchanged Suit metadata. Existing no-suit/cooldown seams
+also cover both, with missing lookup resolving Unresolved. These are synthetic
+SOURCE checks, not retail media, mixer-output or hardware-audibility evidence.
+Broader HEV, intro/long-jump forwarding, other sound producers, queues, save
+tags, dependencies and frameworks remain outside this slice.

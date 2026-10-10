@@ -12,7 +12,7 @@
 //! death — as [`PresentationEvent`]s for [`crate::game::Game::tick`] to
 //! turn into the four additive `GameEvent` variants.
 //!
-//! Built-in weapon/pickup cues use a bounded reviewed lookup. Three reviewed
+//! Built-in weapon/pickup cues use a bounded reviewed lookup. Reviewed
 //! HEV sentence identifiers use the runtime sentence table instead (see
 //! `docs/FORMAT_SOURCES.md`, "Bounded HEV damage sentence audio").
 //! Cues whose path the *map* supplies are a different matter, and
@@ -245,6 +245,7 @@ fn suit_sentence(occasion: ohl_player::SuitOccasion) -> Option<&'static str> {
         SuitOccasion::HeatDamage => Some("HEV_FIRE"),
         SuitOccasion::ShockDamage => Some("HEV_SHOCK"),
         SuitOccasion::MinorFracture => Some("HEV_DMG4"),
+        SuitOccasion::MajorFracture => Some("HEV_DMG5"),
         _ => None,
     }
 }
@@ -297,7 +298,8 @@ mod hev_audio_tests {
     const PLAYER_TAG: u32 = 71;
     const SENTENCES: &[u8] = b"HEV_FIRE ohl/heat_first ohl/heat_second\n\
         HEV_SHOCK ohl/shock_first ohl/shock_second\n\
-        HEV_DMG4 ohl/fall_first ohl/fall_second\n";
+        HEV_DMG4 ohl/fall_first ohl/fall_second\n\
+        HEV_DMG5 ohl/fracture_alpha ohl/fracture_beta\n";
 
     fn suited_player() -> Player {
         let mut player = Player::default();
@@ -390,23 +392,69 @@ mod hev_audio_tests {
     }
 
     #[test]
-    fn hev_audio_existing_cooldown_suppresses_repeat_but_not_later_event() {
-        let mut player = suited_player();
-        let mut presentation = Presentation::new();
+    fn hev_audio_major_fracture_damage_producers_preserve_metadata_and_ordered_words() {
         let sentences = SentenceLookup::from_bytes(SENTENCES);
-        for (elapsed, expected) in [(0.0, 1), (0.1, 0), (10.0, 1)] {
-            player.voice.tick(elapsed);
+        for kind in [DamageKind::Blast, DamageKind::Crush] {
+            // Both producers share an occasion cooldown, so each gets a fresh player.
+            let mut player = suited_player();
             let mut events = Vec::new();
-            player.apply_damage(1.0, DamageKind::Burn, &mut events);
-            assert_eq!(suits(&events).len(), expected);
+            player.apply_damage(1.0, kind, &mut events);
+            let expected_suits = suits(&events);
+            assert_eq!(expected_suits.len(), 1);
+            assert_eq!(expected_suits[0].occasion, SuitOccasion::MajorFracture);
+            assert!(expected_suits[0].delay > 0.0);
+            let mut presentation = Presentation::new();
             let output = present(&mut presentation, &player, events, &sentences);
+            let mut actual_suits = Vec::new();
+            let mut assets = Vec::new();
+            for event in output {
+                match event {
+                    PresentationEvent::Sound(cue) => {
+                        assert_eq!(cue.entity, PLAYER_TAG);
+                        assert_eq!(cue.class, ChannelClass::Voice);
+                        assert_eq!(cue.origin, None);
+                        assert!((cue.volume - 1.0).abs() < f32::EPSILON);
+                        assert!((cue.pitch - 1.0).abs() < f32::EPSILON);
+                        assert!(!cue.stop);
+                        assets.push(cue.asset);
+                    }
+                    PresentationEvent::Suit(suit) => actual_suits.push(suit),
+                    _ => panic!("only sound and suit events expected"),
+                }
+            }
+            assert_eq!(actual_suits, expected_suits);
             assert_eq!(
-                output
-                    .iter()
-                    .filter(|event| matches!(event, PresentationEvent::Sound(_)))
-                    .count(),
-                expected
+                assets,
+                vec![SoundAsset::sentence([
+                    "sound/ohl/fracture_alpha.wav".to_owned(),
+                    "sound/ohl/fracture_beta.wav".to_owned(),
+                ])],
+                "missing or incorrect major-fracture audio for {kind:?}"
             );
+            assert!(presentation.drain_events().is_empty());
+        }
+    }
+
+    #[test]
+    fn hev_audio_existing_cooldown_suppresses_repeat_but_not_later_event() {
+        let sentences = SentenceLookup::from_bytes(SENTENCES);
+        for kind in [DamageKind::Burn, DamageKind::Blast, DamageKind::Crush] {
+            let mut player = suited_player();
+            let mut presentation = Presentation::new();
+            for (elapsed, expected) in [(0.0, 1), (0.1, 0), (10.0, 1)] {
+                player.voice.tick(elapsed);
+                let mut events = Vec::new();
+                player.apply_damage(1.0, kind, &mut events);
+                assert_eq!(suits(&events).len(), expected);
+                let output = present(&mut presentation, &player, events, &sentences);
+                assert_eq!(
+                    output
+                        .iter()
+                        .filter(|event| matches!(event, PresentationEvent::Sound(_)))
+                        .count(),
+                    expected
+                );
+            }
         }
     }
 
@@ -414,6 +462,8 @@ mod hev_audio_tests {
     fn hev_audio_no_suit_invalid_and_generic_damage_do_not_create_cues() {
         for (suited, kind, amount) in [
             (false, DamageKind::Burn, 1.0),
+            (false, DamageKind::Blast, 1.0),
+            (false, DamageKind::Crush, 1.0),
             (true, DamageKind::Generic, 1.0),
             (true, DamageKind::Burn, 0.0),
             (true, DamageKind::Shock, f32::NAN),
@@ -436,6 +486,34 @@ mod hev_audio_tests {
                     .iter()
                     .any(|event| matches!(event, PresentationEvent::Sound(_)))
             );
+        }
+    }
+
+    #[test]
+    fn hev_audio_missing_major_fracture_sentence_preserves_metadata_without_playable_asset() {
+        for kind in [DamageKind::Blast, DamageKind::Crush] {
+            let mut player = suited_player();
+            let mut events = Vec::new();
+            player.apply_damage(1.0, kind, &mut events);
+            let expected_suits = suits(&events);
+            assert_eq!(expected_suits.len(), 1);
+            let output = present(
+                &mut Presentation::new(),
+                &player,
+                events,
+                &SentenceLookup::new(),
+            );
+            let mut actual_suits = Vec::new();
+            let mut assets = Vec::new();
+            for event in output {
+                match event {
+                    PresentationEvent::Sound(cue) => assets.push(cue.asset),
+                    PresentationEvent::Suit(suit) => actual_suits.push(suit),
+                    _ => panic!("only sound and suit events expected"),
+                }
+            }
+            assert_eq!(actual_suits, expected_suits);
+            assert_eq!(assets, vec![SoundAsset::Unresolved]);
         }
     }
 
