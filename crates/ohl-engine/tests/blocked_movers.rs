@@ -624,6 +624,8 @@ fn supported_monster_platform(
     built_map(&entities.replace(&guard, &placed), world, &[LIFT])
 }
 
+// These exact zero/unchanged-health/full-trace values are the physical prerequisites.
+#[allow(clippy::float_cmp)]
 fn idle_monster_query(
     game: &Game,
     guard: ohl_game::hecs::Entity,
@@ -645,6 +647,8 @@ fn idle_monster_query(
 }
 
 #[test]
+// These exact zero/unchanged-health/full-trace values are the physical prerequisites.
+#[allow(clippy::float_cmp)]
 fn supported_monster_descends_with_a_platform_without_becoming_embedded() {
     use glam::Vec3;
     let mut game = supported_monster_platform(-2, 50.0, 32.0, 0.0, &[]);
@@ -709,6 +713,8 @@ fn supported_monster_descends_with_a_platform_without_becoming_embedded() {
 }
 
 #[test]
+// These exact zero/unchanged-health/full-trace values are the physical prerequisites.
+#[allow(clippy::float_cmp)]
 fn supported_monster_carry_does_not_collect_an_unsupported_neighbour() {
     use glam::Vec3;
     let mut game = supported_monster_platform(-2, 50.0, 32.0, 128.0, &[]);
