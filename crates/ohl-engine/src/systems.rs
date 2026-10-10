@@ -1935,6 +1935,35 @@ impl Systems {
                 let hull = monster.hull;
                 let origin = monster.body_frame.anchor_to_query(hull, monster.origin);
                 let probe = collision.trace(hull, origin, origin);
+                // A descending or lateral platform can leave its passenger clear
+                // instead of embedding it. Test its previous support before the
+                // existing penetration-only push path. TODO(black-box): this is
+                // project-authored translational rider behavior.
+                if !probe.start_solid
+                    && let Some((mover, brush, candidate)) =
+                        Self::supported_mover_carry(level, collision, hull, origin, dt)
+                {
+                    let sweep = collision.trace_ignoring(hull, origin, candidate, Some(brush));
+                    let destination = collision.trace(hull, candidate, candidate);
+                    if sweep.blocked() || destination.start_solid || destination.all_solid {
+                        blocked.push((mover, monster.entity));
+                    } else {
+                        let anchor = monster.body_frame.query_to_anchor(hull, candidate);
+                        if let Ok(mut actor) = level
+                            .registry
+                            .world
+                            .get::<&mut ohl_ai::Actor>(monster.entity)
+                        {
+                            actor.origin = anchor;
+                        }
+                        if let Ok(mut transform) =
+                            level.registry.world.get::<&mut Transform>(monster.entity)
+                        {
+                            transform.origin = anchor;
+                        }
+                    }
+                    continue;
+                }
                 let (true, Some(brush)) = (probe.start_solid, probe.brush_index) else {
                     continue;
                 };
@@ -2029,6 +2058,63 @@ impl Systems {
                 },
             });
         }
+    }
+
+    /// Recover previous support for a translating mover without retaining a
+    /// ground entity on the actor. Translating the query by the brush's exact
+    /// displacement tests the old relative pose against its current tree.
+    /// Rotating brushes keep the existing push path: rotating an axis-aligned
+    /// hull query is not equivalent to testing its previous pose.
+    fn supported_mover_carry(
+        level: &Level,
+        collision: &ohl_physics::CollisionModel,
+        hull: ohl_physics::Hull,
+        origin: Vec3,
+        dt: f32,
+    ) -> Option<(Entity, ohl_physics::BrushId, Vec3)> {
+        if !dt.is_finite() || dt <= 0.0 || !origin.is_finite() {
+            return None;
+        }
+        for &(mover, brush) in &level.monster_brush_collision {
+            let Some((_, motion_brush)) = level
+                .brush_collision
+                .iter()
+                .find(|(entity, _)| *entity == mover)
+            else {
+                continue;
+            };
+            if level.brush_rotation.contains_key(motion_brush) {
+                continue;
+            }
+            let step = level
+                .brush_velocity
+                .get(motion_brush)
+                .copied()
+                .unwrap_or(Vec3::ZERO)
+                * dt;
+            // Preserve the seated brush-relative point before returning to
+            // world space. Repeated origin + step rounding can otherwise put
+            // exact contact just inside the translated support plane.
+            let offset = collision.brush_origin(brush);
+            let candidate = (origin - (offset - step)) + offset;
+            if step == Vec3::ZERO || !step.is_finite() || !candidate.is_finite() {
+                continue;
+            }
+            let support = collision.trace_brush(
+                hull,
+                candidate,
+                candidate - Vec3::Z * (2.0 * ohl_physics::DIST_EPSILON),
+                brush,
+            );
+            if !support.start_solid
+                && !support.all_solid
+                && support.fraction < 1.0
+                && support.plane_normal.z >= ohl_physics::MoveConfig::default().slope_limit
+            {
+                return Some((mover, brush, candidate));
+            }
+        }
+        None
     }
 
     /// The entity an attached brush id belongs to, in either of `Level`'s
