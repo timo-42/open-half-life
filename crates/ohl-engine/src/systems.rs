@@ -1919,6 +1919,8 @@ impl Systems {
     /// `DamageType::CRUSH`, the type `crate::damage_map` maps to the
     /// player's own `Crush` kind, and with no attacker: nobody is credited
     /// with a door.
+    // Keep rider/push resolution and its one damage dispatch in phase order.
+    #[allow(clippy::too_many_lines)]
     fn resolve_blocked_movers(&mut self, level: &mut Level, dt: f32) {
         let mut blocked: Vec<(Entity, Entity)> = Vec::new();
         for brush in std::mem::take(&mut level.movers_blocked) {
