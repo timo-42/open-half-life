@@ -170,6 +170,21 @@ pub struct Game {
     weapon_strips: u64,
 }
 
+/// A project-authored read-only Guard query at the current actor/pose state.
+/// The complete local index preserves intervening actors and damageable props;
+/// it neither replaces the phase-5 combat snapshot nor advances animation.
+pub(crate) struct GuardWorldContext<'a> {
+    game: &'a Game,
+    hitboxes: ohl_combat::HitboxIndex,
+}
+
+impl GuardWorldContext<'_> {
+    pub(crate) fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
+        self.game
+            .shot_would_reach_with_hitboxes(target, &self.hitboxes)
+    }
+}
+
 impl Game {
     /// Loads `map` through `source` and places the player at its
     /// `info_player_start`, on the default difficulty.
@@ -877,6 +892,25 @@ impl Game {
     /// on and logs nothing.
     #[must_use]
     pub fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
+        self.shot_would_reach_with_hitboxes(target, self.systems.hitboxes())
+    }
+
+    /// TODO(black-box): Guard evaluates current eyes after script placement and
+    /// AI movement, so its reach query must use that same current geometry.
+    pub(crate) fn guard_world_context(&self) -> GuardWorldContext<'_> {
+        let mut hitboxes = ohl_combat::HitboxIndex::default();
+        crate::combat::rebuild_current_actor_hitbox_index(&mut hitboxes, &self.level);
+        GuardWorldContext {
+            game: self,
+            hitboxes,
+        }
+    }
+
+    fn shot_would_reach_with_hitboxes(
+        &self,
+        target: Vec3,
+        hitboxes: &ohl_combat::HitboxIndex,
+    ) -> Option<ohl_game::hecs::Entity> {
         let collision = self.level.collision.as_ref()?;
         let eye = self.controller.eye_position();
         let direction = (target - eye).normalize_or_zero();
@@ -888,8 +922,7 @@ impl Game {
             ohl_combat::TraceMask::SHOT,
             crate::ids::entity_id(self.level.player),
         );
-        let trace =
-            ohl_combat::trace_attack_filtered(collision, self.systems.hitboxes(), eye, end, filter);
+        let trace = ohl_combat::trace_attack_filtered(collision, hitboxes, eye, end, filter);
         trace.entity.and_then(crate::ids::entity_of)
     }
 

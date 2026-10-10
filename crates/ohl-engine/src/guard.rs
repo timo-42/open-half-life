@@ -199,7 +199,8 @@ fn combat_guard_step(game: &Game) -> (Input, GuardDecision) {
 
     let eye = Vec3::from_array(game.eye_position());
     let inventory = game.inventory();
-    let target = nearest_visible_hostile(game, eye);
+    let context = game.guard_world_context();
+    let target = nearest_visible_hostile(game, &context, eye);
     decision.has_target = target.is_some();
 
     let distance = target.map_or(f32::MAX, |position| eye.distance(position));
@@ -302,14 +303,18 @@ fn combat_guard_step(game: &Game) -> (Input, GuardDecision) {
 /// through it however carefully it is aimed: without the test the loop
 /// empties its clip into something it cannot hurt and is caught reloading
 /// when a monster it *can* hurt arrives. Asking the engine's own attack
-/// trace ([`Game::shot_would_reach`]) is the only honest way to tell the
+/// trace over a complete current-state index is the only honest way to tell the
 /// two apart, and it subsumes the line-of-sight test for anything solid
 /// in between.
 ///
 /// Ties are broken the way [`crate::AiState::hostile_monster_eyes`] orders
 /// its result (ascending entity id), so the choice never depends on query
 /// iteration order.
-fn nearest_visible_hostile(game: &Game, eye: Vec3) -> Option<Vec3> {
+fn nearest_visible_hostile(
+    game: &Game,
+    context: &crate::game::GuardWorldContext<'_>,
+    eye: Vec3,
+) -> Option<Vec3> {
     let mut best: Option<(f32, Vec3)> = None;
     for (entity, position) in game.hostile_monster_eyes() {
         let distance = eye.distance(position);
@@ -322,7 +327,7 @@ fn nearest_visible_hostile(game: &Game, eye: Vec3) -> Option<Vec3> {
         if !has_line_of_sight(game, eye, position) {
             continue;
         }
-        if game.shot_would_reach(position) != Some(entity) {
+        if context.shot_would_reach(position) != Some(entity) {
             continue;
         }
         best = Some((distance, position));
@@ -703,6 +708,310 @@ fn shortest_turn(from: f32, to: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy)]
+    enum GuardBlocker {
+        None,
+        Door,
+        Friendly,
+    }
+
+    // Entirely project-authored geometry, model and map logic. An ordinary
+    // trigger_auto starts an instantaneous script; no actor or index is seeded.
+    #[allow(clippy::too_many_lines, clippy::float_cmp)]
+    fn relocated_guard_fixture(blocker: GuardBlocker) -> (Game, ohl_game::hecs::Entity, Vec3) {
+        use crate::test_support::{entity_block, script_room_entities};
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        let mut extra = [
+            entity_block(
+                "monster_human_grunt",
+                [96.0, -96.0, 1.0],
+                0.0,
+                &[("targetname", "guard_target")],
+            ),
+            entity_block(
+                "aiscripted_sequence",
+                [96.0, 96.0, 1.0],
+                0.0,
+                &[
+                    ("targetname", "guard_relocate"),
+                    ("m_iszEntity", "guard_target"),
+                    ("m_fMoveTo", "4"),
+                    ("m_iszPlay", "idle"),
+                ],
+            ),
+            entity_block(
+                "trigger_auto",
+                [0.0; 3],
+                0.0,
+                &[("target", "guard_relocate")],
+            ),
+        ]
+        .concat();
+        match blocker {
+            GuardBlocker::None => {}
+            GuardBlocker::Door => extra.push_str(&entity_block(
+                "func_door",
+                [0.0; 3],
+                90.0,
+                &[
+                    ("targetname", "guard_blocker"),
+                    ("model", "*1"),
+                    ("speed", "100"),
+                ],
+            )),
+            GuardBlocker::Friendly => extra.push_str(&entity_block(
+                "monster_barney",
+                [-32.0, 48.0, 1.0],
+                0.0,
+                &[("targetname", "guard_blocker"), ("spawnflags", "16")],
+            )),
+        }
+        let entities = script_room_entities([-160.0, 0.0, 36.0], &extra);
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text(&entities);
+        let heads =
+            builder.push_collision_hulls(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], heads, 2, 0, 0);
+        if matches!(blocker, GuardBlocker::Door) {
+            let min = [-40.0, 0.0, 0.0];
+            let max = [-24.0, 96.0, 128.0];
+            let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(min, max)]);
+            builder.push_model(min, max, [0.0; 3], heads, 2, 0, 0);
+        }
+        let (model, _) = ohl_formats::test_support::build_minimal_mdl10_with_hitbox(
+            [-24.0, -24.0, 0.0],
+            [24.0, 24.0, 72.0],
+        );
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert("maps/ohlguardrelocate.bsp", builder.build());
+        for kind in [ohl_ai::MonsterKind::HumanGrunt, ohl_ai::MonsterKind::Barney] {
+            assets.insert(kind.default_model_path().unwrap(), model.clone());
+        }
+        let mut game = Game::load(&assets, "ohlguardrelocate").expect("authored room");
+        let target = game.registry().find("guard_target")[0];
+        let mark = Vec3::new(96.0, 96.0, 1.0);
+        let initial_health = game
+            .registry()
+            .world
+            .get::<&ohl_ai::Actor>(target)
+            .unwrap()
+            .health;
+        let player_health = game.player_health();
+        for _ in 0..16 {
+            let old = game
+                .registry()
+                .world
+                .get::<&ohl_ai::Actor>(target)
+                .unwrap()
+                .eye();
+            game.tick(crate::TICK_SECONDS, &Input::default());
+            let body = *game.registry().world.get::<&ohl_ai::Actor>(target).unwrap();
+            if body.origin == mark {
+                assert!(body.alive && game.player_health() > 0.0);
+                assert_eq!(body.health, initial_health);
+                assert_eq!(game.player_health(), player_health);
+                assert!(
+                    game.registry()
+                        .world
+                        .get::<&ohl_ai::MonsterAi>(target)
+                        .is_ok()
+                );
+                assert!(
+                    game.registry()
+                        .world
+                        .get::<&ohl_ai::ScriptHold>(target)
+                        .is_ok()
+                );
+                assert_eq!(
+                    game.registry()
+                        .world
+                        .get::<&ohl_game::registry::Transform>(target)
+                        .unwrap()
+                        .origin,
+                    mark
+                );
+                assert!(
+                    old.distance(body.eye()) > 128.0,
+                    "genuine ordinary script relocation"
+                );
+                assert_eq!(game.hostile_monster_eyes(), vec![(target, body.eye())]);
+                return (game, target, old);
+            }
+        }
+        panic!("ordinary trigger/script did not relocate its living hostile");
+    }
+
+    fn fresh_guard_index(game: &mut Game) -> ohl_combat::HitboxIndex {
+        let (level, _) = game.level_and_systems_mut();
+        let mut hitboxes = ohl_combat::HitboxIndex::default();
+        crate::combat::rebuild_current_actor_hitbox_index(&mut hitboxes, level);
+        assert_eq!(hitboxes.rejected(), 0);
+        hitboxes
+    }
+
+    fn trace_guard_index(
+        game: &Game,
+        index: &ohl_combat::HitboxIndex,
+        target: Vec3,
+    ) -> Option<ohl_game::hecs::Entity> {
+        let eye = Vec3::from_array(game.eye_position());
+        let end = eye + (target - eye).normalize() * HITSCAN_RANGE;
+        let filter = ohl_combat::TraceFilter::ignoring(
+            ohl_combat::TraceMask::SHOT,
+            crate::ids::entity_id(game.player_entity()),
+        );
+        ohl_combat::trace_attack_filtered(game.collision().unwrap(), index, eye, end, filter)
+            .entity
+            .and_then(crate::ids::entity_of)
+    }
+
+    // The physical/ordinary-input prerequisites must survive the cached-query mutant.
+    #[test]
+    #[allow(clippy::too_many_lines, clippy::float_cmp)]
+    fn guard_sees_a_hostile_at_its_current_script_relocation() {
+        use crate::components::{StudioAnim, StudioGait};
+        use ohl_ai::Actor;
+        let (mut game, target, old_eye) = relocated_guard_fixture(GuardBlocker::None);
+        let body = *game.registry().world.get::<&Actor>(target).unwrap();
+        let eye = body.eye();
+        let health = body.health;
+        let anim = *game.registry().world.get::<&StudioAnim>(target).unwrap();
+        let gait = game
+            .registry()
+            .world
+            .get::<&StudioGait>(target)
+            .ok()
+            .map(|g| (*g).clone());
+        let ai_before = game.ai_state_hash();
+        let cached = {
+            let (_, systems) = game.level_and_systems_mut();
+            systems.hitboxes().entries().to_vec()
+        };
+        let query = body.query_origin();
+        let at = game.collision().unwrap().trace(body.hull, query, query);
+        assert!(!at.start_solid && !at.all_solid);
+        let floor = game
+            .collision()
+            .unwrap()
+            .trace(body.hull, query, query - Vec3::Z * 2.0);
+        assert!(!floor.start_solid && floor.fraction < 1.0 && floor.plane_normal.z >= 0.7);
+        assert!(has_line_of_sight(
+            &game,
+            Vec3::from_array(game.eye_position()),
+            eye
+        ));
+        assert!(Vec3::from_array(game.eye_position()).distance(eye) < GUARD_ENGAGE_RANGE);
+        assert_eq!(
+            game.shot_would_reach(old_eye),
+            Some(target),
+            "actual phase5 old ray hits"
+        );
+        assert_eq!(
+            game.shot_would_reach(eye),
+            None,
+            "actual phase5 new ray misses"
+        );
+        let fresh = fresh_guard_index(&mut game);
+        let entry = fresh
+            .entries()
+            .iter()
+            .find(|entry| entry.id == crate::ids::entity_id(target))
+            .expect("current full-generational posed target");
+        assert_eq!(entry.origin, body.origin);
+        assert_eq!(entry.boxes.len(), 1, "one genuine root-bone hitbox");
+        let local_eye = entry.rotation.conjugate() * (eye - entry.origin);
+        assert!(
+            local_eye.cmpge(entry.boxes[0].min).all() && local_eye.cmple(entry.boxes[0].max).all(),
+            "current eye lies in sampled pose"
+        );
+        assert_eq!(
+            trace_guard_index(&game, &fresh, eye),
+            Some(target),
+            "independent current all-entry damage trace reaches this same entity"
+        );
+
+        let decision = guard_step(&game).1;
+        assert_eq!(game.ai_state_hash(), ai_before, "Guard is read-only");
+        assert_eq!(
+            *game.registry().world.get::<&StudioAnim>(target).unwrap(),
+            anim
+        );
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&StudioGait>(target)
+                .ok()
+                .map(|g| (*g).clone()),
+            gait
+        );
+        assert_eq!(
+            game.registry().world.get::<&Actor>(target).unwrap().health,
+            health
+        );
+        let (_, systems) = game.level_and_systems_mut();
+        assert_eq!(
+            systems.hitboxes().entries(),
+            cached.as_slice(),
+            "shared phase5 index unchanged"
+        );
+        assert!(
+            decision.has_target,
+            "GUARD PRIMARY: current eligible posed hostile is targetable"
+        );
+    }
+
+    #[test]
+    fn guard_current_geometry_respects_a_closed_door() {
+        let (mut game, target, _) = relocated_guard_fixture(GuardBlocker::Door);
+        let eye = game
+            .registry()
+            .world
+            .get::<&ohl_ai::Actor>(target)
+            .unwrap()
+            .eye();
+        let door = game.registry().find("guard_blocker")[0];
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&ohl_game::registry::Door>(door)
+                .unwrap()
+                .state,
+            ohl_game::registry::MoverState::Closed
+        );
+        assert!(!has_line_of_sight(
+            &game,
+            Vec3::from_array(game.eye_position()),
+            eye
+        ));
+        let fresh = fresh_guard_index(&mut game);
+        assert_ne!(trace_guard_index(&game, &fresh, eye), Some(target));
+        assert!(!guard_step(&game).1.has_target);
+    }
+
+    #[test]
+    fn guard_current_geometry_respects_an_intervening_friendly() {
+        let (mut game, target, _) = relocated_guard_fixture(GuardBlocker::Friendly);
+        let eye = game
+            .registry()
+            .world
+            .get::<&ohl_ai::Actor>(target)
+            .unwrap()
+            .eye();
+        let friend = game.registry().find("guard_blocker")[0];
+        assert!(has_line_of_sight(
+            &game,
+            Vec3::from_array(game.eye_position()),
+            eye
+        ));
+        let fresh = fresh_guard_index(&mut game);
+        assert_eq!(
+            trace_guard_index(&game, &fresh, eye),
+            Some(friend),
+            "complete current index keeps the intervening non-hostile actor"
+        );
+        assert!(!guard_step(&game).1.has_target);
+    }
 
     // Keep the corner/setup/input checks together; exact authored inputs are the oracle.
     #[allow(clippy::too_many_lines, clippy::float_cmp)]
