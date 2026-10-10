@@ -294,7 +294,7 @@ fn combat_guard_step(game: &Game) -> (Input, GuardDecision) {
     (input, decision)
 }
 
-/// The eye position of the nearest living monster hostile to the player
+/// A reachable aim point on the nearest living monster hostile to the player
 /// that is in range, has an unobstructed line from `eye`, and that a shot
 /// aimed at it would actually *reach*.
 ///
@@ -324,13 +324,26 @@ fn nearest_visible_hostile(
         if best.is_some_and(|(best_distance, _)| distance >= best_distance) {
             continue;
         }
-        if !has_line_of_sight(game, eye, position) {
-            continue;
+        let reachable = |aim: Vec3| {
+            let aim_distance = eye.distance(aim);
+            aim.is_finite()
+                && aim_distance.is_finite()
+                && aim_distance <= GUARD_ENGAGE_RANGE
+                && has_line_of_sight(game, eye, aim)
+                && context.shot_would_reach(aim) == Some(entity)
+        };
+        // Keep the eye first and keep candidate ranking measured to that eye.
+        // A valid model's damage boxes need not contain its sight position.
+        let aim = if reachable(position) {
+            Some(position)
+        } else {
+            context
+                .hitbox_centers(entity)
+                .find(|&point| reachable(point))
+        };
+        if let Some(aim) = aim {
+            best = Some((distance, aim));
         }
-        if context.shot_would_reach(position) != Some(entity) {
-            continue;
-        }
-        best = Some((distance, position));
     }
     best.map(|(_, position)| position)
 }
@@ -708,6 +721,389 @@ fn shortest_turn(from: f32, to: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // New BSP/Studio bytes are project-authored. The model's sight position
+    // and broad bounds intentionally do not promise a damage box at its eye.
+    fn guard_aim_model(boxes: &[([f32; 3], [f32; 3])]) -> Vec<u8> {
+        let (mut bytes, layout) = ohl_formats::test_support::build_minimal_mdl10();
+        for (offset, values) in [
+            (76, [0.0_f32, 0.0, 64.0]),
+            (88, [-48.0, -48.0, 0.0]),
+            (100, [48.0, 48.0, 72.0]),
+            (112, [-48.0, -48.0, 0.0]),
+            (124, [48.0, 48.0, 72.0]),
+        ] {
+            for (axis, value) in values.into_iter().enumerate() {
+                bytes[offset + axis * 4..offset + axis * 4 + 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        // A real two-frame, ten-second sequence with a static root channel.
+        bytes[layout.sequences_offset + 32..layout.sequences_offset + 36]
+            .copy_from_slice(&0.1_f32.to_le_bytes());
+        bytes[layout.anim_data_offset + 26..layout.anim_data_offset + 30].fill(0);
+        assert_eq!(bytes.len(), layout.hitboxes_offset);
+        for (min, max) in boxes {
+            bytes.extend_from_slice(&0_i32.to_le_bytes()); // root bone
+            bytes.extend_from_slice(&0_i32.to_le_bytes()); // generic hit group
+            for value in min.iter().chain(max) {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes[156..160].copy_from_slice(&u32::try_from(boxes.len()).unwrap().to_le_bytes());
+        let length = u32::try_from(bytes.len()).unwrap();
+        bytes[72..76].copy_from_slice(&length.to_le_bytes());
+        bytes
+    }
+
+    // Ordinary auto-triggered No movement script, loadout and fixed-step input.
+    #[allow(clippy::too_many_lines)]
+    fn guard_aim_fixture(
+        boxes: &[([f32; 3], [f32; 3])],
+        yaw: f32,
+        blocker: GuardBlocker,
+    ) -> (Game, ohl_game::hecs::Entity) {
+        use crate::test_support::{entity_block, script_room_entities};
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        let mut extra = [
+            entity_block(
+                "monster_human_grunt",
+                [256.0, 0.0, 36.0],
+                yaw,
+                &[("targetname", "aim_target")],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [256.0, 0.0, 36.0],
+                yaw,
+                &[
+                    ("targetname", "aim_hold"),
+                    ("m_iszEntity", "aim_target"),
+                    ("m_fMoveTo", "0"),
+                    ("m_iszPlay", "idle"),
+                    ("spawnflags", "32"),
+                ],
+            ),
+            entity_block("trigger_auto", [0.0; 3], 0.0, &[("target", "aim_hold")]),
+        ]
+        .concat();
+        match blocker {
+            GuardBlocker::None => {}
+            GuardBlocker::Door => extra.push_str(&entity_block(
+                "func_door",
+                [0.0; 3],
+                90.0,
+                &[
+                    ("targetname", "aim_blocker"),
+                    ("model", "*1"),
+                    ("speed", "100"),
+                ],
+            )),
+            GuardBlocker::Friendly => extra.push_str(&entity_block(
+                "monster_barney",
+                [128.0, 0.0, 36.0],
+                0.0,
+                &[("targetname", "aim_blocker"), ("spawnflags", "16")],
+            )),
+        }
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text(&script_room_entities([0.0, 0.0, 36.0], &extra));
+        let floor =
+            builder.push_collision_hulls(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], floor, 2, 0, 0);
+        if matches!(blocker, GuardBlocker::Door) {
+            let min = [120.0, -128.0, 0.0];
+            let max = [136.0, 128.0, 128.0];
+            let hulls = builder.push_collision_hulls(&[CollisionBrush::box_brush(min, max)]);
+            builder.push_model(min, max, [0.0; 3], hulls, 2, 0, 0);
+        }
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert("maps/ohlguardaim.bsp", builder.build());
+        assets.insert(
+            ohl_ai::MonsterKind::HumanGrunt
+                .default_model_path()
+                .unwrap(),
+            guard_aim_model(boxes),
+        );
+        assets.insert(
+            ohl_ai::MonsterKind::Barney.default_model_path().unwrap(),
+            guard_aim_model(&[([-24.0, -24.0, 0.0], [24.0, 24.0, 72.0])]),
+        );
+        let mut game = Game::load(&assets, "ohlguardaim").expect("authored aim room");
+        game.give_start_inventory(&[crate::StartInventoryItem::Weapon(WeaponId::Glock)]);
+        let target = game.registry().find("aim_target")[0];
+        for _ in 0..16 {
+            game.tick(crate::TICK_SECONDS, &Input::default());
+        }
+        let body = *game.registry().world.get::<&ohl_ai::Actor>(target).unwrap();
+        assert!(body.alive && body.health > 0.0 && game.player_health() > 0.0);
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_ai::MonsterAi>(target)
+                .is_ok()
+        );
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_ai::ScriptHold>(target)
+                .is_ok()
+        );
+        assert_eq!(game.script_start_count(), 1);
+        assert_eq!(game.script_completion_count(), 0);
+        assert_eq!(game.active_script_count(), 1);
+        assert_eq!(game.hostile_monster_eyes(), vec![(target, body.eye())]);
+        let transform = *game
+            .registry()
+            .world
+            .get::<&ohl_game::registry::Transform>(target)
+            .unwrap();
+        assert_eq!(body.origin, transform.origin);
+        assert!((body.origin.truncate() - Vec3::new(256.0, 0.0, 0.0).truncate()).length() < 0.001);
+        assert!((body.eye() - body.origin - Vec3::Z * 64.0).length() < 0.001);
+        let query = body.query_origin();
+        let at = game.collision().unwrap().trace(body.hull, query, query);
+        assert!(!at.start_solid && !at.all_solid);
+        let support = game
+            .collision()
+            .unwrap()
+            .trace(body.hull, query, query - Vec3::Z * 2.0);
+        assert!(!support.start_solid && support.fraction < 1.0 && support.plane_normal.z >= 0.7);
+        assert!(
+            game.registry()
+                .world
+                .get::<&crate::StudioAnim>(target)
+                .unwrap()
+                .cycle
+                > 0.0
+        );
+        (game, target)
+    }
+
+    fn guard_aim_entry(
+        game: &mut Game,
+        target: ohl_game::hecs::Entity,
+    ) -> ohl_combat::EntityHitboxes {
+        let index = fresh_guard_index(game);
+        index
+            .entries()
+            .iter()
+            .find(|entry| entry.id == crate::ids::entity_id(target))
+            .expect("accepted full-generation current posed entry")
+            .clone()
+    }
+
+    // Keep ordinary geometry, read-only state and final real-input consequence together.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn guard_aim_fallback_acquires_and_hits_below_the_eye() {
+        use crate::components::{StudioAnim, StudioGait};
+        use ohl_ai::Actor;
+        use ohl_game::registry::Transform;
+        let (mut game, target) = guard_aim_fixture(
+            &[([-12.0, -12.0, 12.0], [12.0, 12.0, 44.0])],
+            0.0,
+            GuardBlocker::None,
+        );
+        let entry = guard_aim_entry(&mut game, target);
+        assert_eq!(entry.boxes.len(), 1);
+        let body = *game.registry().world.get::<&Actor>(target).unwrap();
+        let transform = *game.registry().world.get::<&Transform>(target).unwrap();
+        let anim = *game.registry().world.get::<&StudioAnim>(target).unwrap();
+        let gait = game
+            .registry()
+            .world
+            .get::<&StudioGait>(target)
+            .ok()
+            .map(|g| (*g).clone());
+        let ai = game.ai_state_hash();
+        let cached = {
+            let (_, systems) = game.level_and_systems_mut();
+            systems.hitboxes().entries().to_vec()
+        };
+        let eye = Vec3::from_array(game.eye_position());
+        assert!(has_line_of_sight(&game, eye, body.eye()));
+        assert!(eye.distance(body.eye()) < GUARD_ENGAGE_RANGE);
+        let local_eye = entry.rotation.conjugate() * (body.eye() - entry.origin);
+        assert!(
+            local_eye.z > entry.boxes[0].max.z,
+            "real eye lies above every damage box"
+        );
+        // Independent authored centre, not obtained from the new context helper.
+        let centre = transform.origin + Vec3::Z * 28.0;
+        let fresh = fresh_guard_index(&mut game);
+        assert_eq!(trace_guard_index(&game, &fresh, body.eye()), None);
+        assert_eq!(trace_guard_index(&game, &fresh, centre), Some(target));
+        assert!(has_line_of_sight(&game, eye, centre));
+        assert!(centre.is_finite() && eye.distance(centre) < GUARD_ENGAGE_RANGE);
+        let decision = guard_step(&game);
+        assert_eq!(
+            guard_step(&game),
+            decision,
+            "repeated current queries are deterministic"
+        );
+        assert_eq!(*game.registry().world.get::<&Actor>(target).unwrap(), body);
+        assert_eq!(
+            *game.registry().world.get::<&Transform>(target).unwrap(),
+            transform
+        );
+        assert_eq!(
+            *game.registry().world.get::<&StudioAnim>(target).unwrap(),
+            anim
+        );
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&StudioGait>(target)
+                .ok()
+                .map(|g| (*g).clone()),
+            gait
+        );
+        assert_eq!(game.ai_state_hash(), ai);
+        let (_, systems) = game.level_and_systems_mut();
+        assert_eq!(
+            systems.hitboxes().entries(),
+            cached.as_slice(),
+            "phase5 snapshot unchanged"
+        );
+        assert!(
+            decision.1.has_target,
+            "GUARD AIM PRIMARY: a clear posed body is acquired when its eye ray misses"
+        );
+
+        let fired_before = game.weapon_fired_count();
+        let hits_before = game.shot_hit_count();
+        for _ in 0..240 {
+            let input = guard_step(&game).0;
+            game.tick(crate::TICK_SECONDS, &input);
+            if game.registry().world.get::<&Actor>(target).unwrap().health < body.health {
+                break;
+            }
+        }
+        assert!(
+            game.weapon_fired_count() > fired_before,
+            "ordinary Guard input fires a real weapon"
+        );
+        assert!(
+            game.shot_hit_count() > hits_before,
+            "ordinary shot resolves a real entity hit"
+        );
+        assert!(game.registry().world.get::<&Actor>(target).unwrap().health < body.health);
+    }
+
+    #[test]
+    fn guard_aim_fallback_respects_a_closed_brush() {
+        let (mut game, target) = guard_aim_fixture(
+            &[([-12.0, -12.0, 12.0], [12.0, 12.0, 44.0])],
+            0.0,
+            GuardBlocker::Door,
+        );
+        let body = *game.registry().world.get::<&ohl_ai::Actor>(target).unwrap();
+        let entry = guard_aim_entry(&mut game, target);
+        let fresh = fresh_guard_index(&mut game);
+        let door = game.registry().find("aim_blocker")[0];
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&ohl_game::registry::Door>(door)
+                .unwrap()
+                .state,
+            ohl_game::registry::MoverState::Closed
+        );
+        for point in [body.eye(), entry.origin + Vec3::Z * 28.0] {
+            assert!(!has_line_of_sight(
+                &game,
+                Vec3::from_array(game.eye_position()),
+                point
+            ));
+            assert_ne!(trace_guard_index(&game, &fresh, point), Some(target));
+        }
+        assert!(!guard_step(&game).1.has_target);
+    }
+
+    #[test]
+    fn guard_aim_fallback_respects_the_first_friendly_hit() {
+        let (mut game, target) = guard_aim_fixture(
+            &[([-12.0, -12.0, 12.0], [12.0, 12.0, 44.0])],
+            0.0,
+            GuardBlocker::Friendly,
+        );
+        let body = *game.registry().world.get::<&ohl_ai::Actor>(target).unwrap();
+        let entry = guard_aim_entry(&mut game, target);
+        let fresh = fresh_guard_index(&mut game);
+        let friendly = game.registry().find("aim_blocker")[0];
+        for point in [body.eye(), entry.origin + Vec3::Z * 28.0] {
+            assert!(has_line_of_sight(
+                &game,
+                Vec3::from_array(game.eye_position()),
+                point
+            ));
+            assert_eq!(trace_guard_index(&game, &fresh, point), Some(friendly));
+        }
+        assert!(!guard_step(&game).1.has_target);
+    }
+
+    #[test]
+    fn guard_aim_fallback_keeps_a_reachable_eye_first() {
+        let (mut game, target) = guard_aim_fixture(
+            &[([-12.0, -12.0, 12.0], [12.0, 12.0, 72.0])],
+            0.0,
+            GuardBlocker::None,
+        );
+        let body = *game.registry().world.get::<&ohl_ai::Actor>(target).unwrap();
+        let centre = body.origin + Vec3::Z * 42.0;
+        let fresh = fresh_guard_index(&mut game);
+        assert_eq!(trace_guard_index(&game, &fresh, body.eye()), Some(target));
+        assert_eq!(trace_guard_index(&game, &fresh, centre), Some(target));
+        assert!(centre.distance(body.eye()) > 16.0);
+        let context = game.guard_world_context();
+        assert_eq!(
+            nearest_visible_hostile(&game, &context, Vec3::from_array(game.eye_position())),
+            Some(body.eye()),
+            "successful historical eye aim retains priority"
+        );
+    }
+
+    #[test]
+    fn guard_aim_fallback_uses_split_rotated_boxes_not_the_union_centre() {
+        let boxes = [
+            ([-6.0, -40.0, 12.0], [6.0, -24.0, 44.0]),
+            ([-6.0, 24.0, 12.0], [6.0, 40.0, 44.0]),
+        ];
+        let (mut game, target) = guard_aim_fixture(&boxes, 45.0, GuardBlocker::None);
+        let body = *game.registry().world.get::<&ohl_ai::Actor>(target).unwrap();
+        let entry = guard_aim_entry(&mut game, target);
+        assert_eq!(entry.boxes.len(), 2);
+        let rotation = glam::Quat::from_rotation_z(45.0_f32.to_radians());
+        let expected = [
+            body.origin + rotation * Vec3::new(0.0, -32.0, 28.0),
+            body.origin + rotation * Vec3::new(0.0, 32.0, 28.0),
+        ];
+        let union_centre = body.origin + Vec3::Z * 28.0;
+        let fresh = fresh_guard_index(&mut game);
+        assert_eq!(trace_guard_index(&game, &fresh, body.eye()), None);
+        assert_eq!(
+            trace_guard_index(&game, &fresh, union_centre),
+            None,
+            "union centre is empty space"
+        );
+        for point in expected {
+            assert!(has_line_of_sight(
+                &game,
+                Vec3::from_array(game.eye_position()),
+                point
+            ));
+            assert_eq!(trace_guard_index(&game, &fresh, point), Some(target));
+        }
+        let context = game.guard_world_context();
+        let selected =
+            nearest_visible_hostile(&game, &context, Vec3::from_array(game.eye_position()))
+                .expect("a clear individual box is selected");
+        assert!(
+            selected.distance(expected[0]) < 0.001,
+            "the first local box centre is transformed once; the empty union is never aimed at"
+        );
+    }
 
     #[derive(Clone, Copy)]
     enum GuardBlocker {

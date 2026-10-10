@@ -179,6 +179,23 @@ pub(crate) struct GuardWorldContext<'a> {
 }
 
 impl GuardWorldContext<'_> {
+    /// Project-authored fallback aims, in the existing model hitbox order.
+    /// Reuse each already posed box: its union centre need not lie in any box.
+    pub(crate) fn hitbox_centers(
+        &self,
+        entity: ohl_game::hecs::Entity,
+    ) -> impl Iterator<Item = Vec3> + '_ {
+        self.hitboxes
+            .entries()
+            .iter()
+            .filter(move |entry| entry.id == crate::ids::entity_id(entity))
+            .flat_map(|entry| {
+                entry.boxes.iter().map(move |hitbox| {
+                    entry.origin + entry.rotation * (hitbox.min * 0.5 + hitbox.max * 0.5)
+                })
+            })
+    }
+
     pub(crate) fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
         self.game
             .shot_would_reach_with_hitboxes(target, &self.hitboxes)
