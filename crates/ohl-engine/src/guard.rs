@@ -765,16 +765,17 @@ mod tests {
     ) -> (Game, ohl_game::hecs::Entity) {
         use crate::test_support::{entity_block, script_room_entities};
         use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        // Author the intended supported feet directly; spawn does not snap down.
         let mut extra = [
             entity_block(
                 "monster_human_grunt",
-                [256.0, 0.0, 36.0],
+                [256.0, 0.0, ohl_physics::DIST_EPSILON],
                 yaw,
                 &[("targetname", "aim_target")],
             ),
             entity_block(
                 "scripted_sequence",
-                [256.0, 0.0, 36.0],
+                [256.0, 0.0, ohl_physics::DIST_EPSILON],
                 yaw,
                 &[
                     ("targetname", "aim_hold"),
@@ -801,7 +802,7 @@ mod tests {
             )),
             GuardBlocker::Friendly => extra.push_str(&entity_block(
                 "monster_barney",
-                [128.0, 0.0, 36.0],
+                [128.0, 0.0, ohl_physics::DIST_EPSILON],
                 0.0,
                 &[("targetname", "aim_blocker"), ("spawnflags", "16")],
             )),

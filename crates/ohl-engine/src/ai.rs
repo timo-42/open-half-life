@@ -3264,10 +3264,10 @@ fn stands_on_floor(kind: &MonsterKind, actor: &Actor) -> bool {
         )
 }
 
-/// Applies the bounded spawn-floor search once, before any saved Transform is
-/// restored. Actor and Transform remain the same model anchor; only the trace
-/// crosses the BodyFrame boundary. Missing floor, unusable starts and exclusions
-/// retain the authored placement without introducing a second lift component.
+/// Corrects only an eligible upward trace-epsilon contact before any saved
+/// Transform is restored. General downward map/maker floor settling is deferred:
+/// Actor and Transform retain the authored model anchor. The existing bounded
+/// correction may also clear an incidental shallow overlap; it is not gravity.
 fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
     let Ok(actor) = level
         .registry
@@ -3296,9 +3296,9 @@ fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
     if !anchor.is_finite() {
         return;
     }
-    // Retain clear authored floor contact. Only the bounded numerical
-    // separation below may move an originally solid contact upward.
-    if anchor.z >= actor.origin.z && !can_separate_floor_contact(collision, &actor, anchor, &fall) {
+    // Preserve authored height rather than snapping downward. Only the existing
+    // bounded numerical separation may move an originally solid contact upward.
+    if anchor.z <= actor.origin.z || !can_separate_floor_contact(collision, &actor, anchor, &fall) {
         return;
     }
     if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(entity) {
@@ -3366,7 +3366,7 @@ mod anchor_domain_floor_tests {
     #[test]
     // Keep generated model setup and its floor/retention discriminators together.
     #[allow(clippy::too_many_lines)]
-    fn anchor_domain_floor_uses_one_offset_even_for_custom_nonpositive_offsets() {
+    fn anchor_domain_floor_retains_authored_custom_nonpositive_offsets() {
         for (bottom, authored_z, distinguishes_start) in [
             (0.0_f32, 17.0, true),
             (-36.0, 80.0, false),
@@ -3428,11 +3428,8 @@ mod anchor_domain_floor_tests {
                     .unwrap()
                     .origin
             );
-            assert!(
-                (actor.origin.z + bottom).abs() < 0.05,
-                "single-offset floor landing"
-            );
-            assert!((actor.query_origin().z - 36.0).abs() < 0.05);
+            assert_eq!(actor.origin, Vec3::new(100.0, 0.0, authored_z));
+            assert!((actor.query_origin().z - (authored_z + bottom + 36.0)).abs() < 0.05);
 
             // Missing collision and a genuinely embedded start retain both anchors.
             let saved_collision = level.monster_collision.take();
@@ -3795,7 +3792,7 @@ mod anchor_domain_floor_tests {
     }
 
     #[test]
-    fn floor_contact_keeps_ordinary_downward_ramp_seating() {
+    fn floor_contact_retains_authored_height_above_a_lower_ramp() {
         use ohl_formats::test_support::CollisionBrush;
         let brushes = [CollisionBrush::half_space([0.6, 0.0, 0.8], -9.6)];
         let origin = Vec3::Z * 20.0;
@@ -3811,8 +3808,8 @@ mod anchor_domain_floor_tests {
         assert!(!fall.start_solid && fall.fraction < 1.0 && fall.plane_normal.z >= 0.7);
         assert!(anchor.z < origin.z);
         assert_eq!(
-            actual.origin, anchor,
-            "existing downward single-offset landing"
+            actual.origin, origin,
+            "a reachable lower ramp does not rewrite the authored spawn anchor"
         );
         assert_eq!(
             actual.origin,
