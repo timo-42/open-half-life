@@ -170,6 +170,38 @@ pub struct Game {
     weapon_strips: u64,
 }
 
+/// A project-authored read-only Guard query at the current actor/pose state.
+/// The complete local index preserves intervening actors and damageable props;
+/// it neither replaces the phase-5 combat snapshot nor advances animation.
+pub(crate) struct GuardWorldContext<'a> {
+    game: &'a Game,
+    hitboxes: ohl_combat::HitboxIndex,
+}
+
+impl GuardWorldContext<'_> {
+    /// Project-authored fallback aims, in the existing model hitbox order.
+    /// Reuse each already posed box: its union centre need not lie in any box.
+    pub(crate) fn hitbox_centers(
+        &self,
+        entity: ohl_game::hecs::Entity,
+    ) -> impl Iterator<Item = Vec3> + '_ {
+        self.hitboxes
+            .entries()
+            .iter()
+            .filter(move |entry| entry.id == crate::ids::entity_id(entity))
+            .flat_map(|entry| {
+                entry.boxes.iter().map(move |hitbox| {
+                    entry.origin + entry.rotation * (hitbox.min * 0.5 + hitbox.max * 0.5)
+                })
+            })
+    }
+
+    pub(crate) fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
+        self.game
+            .shot_would_reach_with_hitboxes(target, &self.hitboxes)
+    }
+}
+
 impl Game {
     /// Loads `map` through `source` and places the player at its
     /// `info_player_start`, on the default difficulty.
@@ -574,6 +606,41 @@ impl Game {
         self.systems.projectile_count()
     }
 
+    /// Private current-body exposure query for the headless guard policy.
+    pub(crate) fn timed_blast_threat(
+        &self,
+        horizon: f32,
+    ) -> Option<crate::projectiles::TimedBlastThreat> {
+        self.systems.timed_blast_threat(
+            self.level.collision.as_ref()?,
+            self.controller.state.origin,
+            self.controller.state.hull(),
+            horizon,
+        )
+    }
+
+    /// Read the exact walking wish after this input's view change, without
+    /// advancing physics or changing the live controller.
+    pub(crate) fn guard_movement_wish(&self, input: &Input) -> Option<(ohl_physics::Hull, Vec3)> {
+        let mut controller = self.controller.clone();
+        if controller.noclip()
+            || controller.state.is_swimming()
+            || !controller.yaw.is_finite()
+            || !controller.pitch.is_finite()
+            || !input.mouse_delta.0.is_finite()
+            || !input.mouse_delta.1.is_finite()
+        {
+            return None;
+        }
+        controller.apply_mouse_delta(input.mouse_delta.0, input.mouse_delta.1, MOUSE_SENSITIVITY);
+        let wish = controller.wish_move(&ohl_physics::ControllerInput {
+            forward: input.forward,
+            right: input.right,
+            ..ohl_physics::ControllerInput::default()
+        });
+        (wish.is_finite() && wish.length_squared() > 0.0).then_some((controller.state.hull(), wish))
+    }
+
     /// Whether this frame draws a first-person view model. See
     /// `crate::viewmodel`.
     #[must_use]
@@ -842,6 +909,25 @@ impl Game {
     /// on and logs nothing.
     #[must_use]
     pub fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
+        self.shot_would_reach_with_hitboxes(target, self.systems.hitboxes())
+    }
+
+    /// TODO(black-box): Guard evaluates current eyes after script placement and
+    /// AI movement, so its reach query must use that same current geometry.
+    pub(crate) fn guard_world_context(&self) -> GuardWorldContext<'_> {
+        let mut hitboxes = ohl_combat::HitboxIndex::default();
+        crate::combat::rebuild_current_actor_hitbox_index(&mut hitboxes, &self.level);
+        GuardWorldContext {
+            game: self,
+            hitboxes,
+        }
+    }
+
+    fn shot_would_reach_with_hitboxes(
+        &self,
+        target: Vec3,
+        hitboxes: &ohl_combat::HitboxIndex,
+    ) -> Option<ohl_game::hecs::Entity> {
         let collision = self.level.collision.as_ref()?;
         let eye = self.controller.eye_position();
         let direction = (target - eye).normalize_or_zero();
@@ -853,8 +939,7 @@ impl Game {
             ohl_combat::TraceMask::SHOT,
             crate::ids::entity_id(self.level.player),
         );
-        let trace =
-            ohl_combat::trace_attack_filtered(collision, self.systems.hitboxes(), eye, end, filter);
+        let trace = ohl_combat::trace_attack_filtered(collision, hitboxes, eye, end, filter);
         trace.entity.and_then(crate::ids::entity_of)
     }
 
@@ -957,6 +1042,12 @@ impl Game {
     #[must_use]
     pub fn script_timeout_count(&self) -> u64 {
         self.systems.ai().script_timeout_count()
+    }
+
+    /// Aggregate script routing counters for development inspection.
+    #[must_use]
+    pub fn script_navigation_stats(&self) -> ohl_ai::NavigationStats {
+        self.systems.ai().world().script_navigation_stats()
     }
 
     /// The allies currently following the player, oldest first. Data, never
@@ -1124,12 +1215,13 @@ impl Game {
     /// that as a sign the requested viewpoint needs adjusting, not as a
     /// bug in this method.
     pub fn set_viewpoint(&mut self, position: [f32; 3], pitch: f32, yaw: f32) {
+        let eye_offset = self.controller.eye_position() - self.controller.state.origin;
         self.camera.position = position;
         self.camera.pitch = pitch;
         self.camera.yaw = yaw;
         self.controller.yaw = yaw;
         self.controller.pitch = pitch;
-        self.controller.state.origin = Vec3::from_array(position);
+        self.controller.state.origin = Vec3::from_array(position) - eye_offset;
         // A caller-chosen viewpoint is a free camera, not a spawn: keep the
         // physics controller from immediately dragging it back to the floor.
         self.controller.set_noclip(true);
@@ -1803,6 +1895,7 @@ impl Game {
             projectile_runtime: self.systems.snapshot_projectile_runtime(&self.level),
             tanks: self.systems.snapshot_tanks(&self.level),
             charger_reservoirs: self.systems.snapshot_charger_reservoirs(&self.level),
+            follow_navigation: Some(self.systems.ai.snapshot_follow_navigation(&self.level)),
             map_effects: Some(self.systems.map_effects.snapshot(
                 &self.level.registry,
                 self.level.player,
@@ -1935,6 +2028,9 @@ impl Game {
         }
         let mut game = Self::from_level(level, source, config);
         game.restore(save);
+        game.systems
+            .ai
+            .restore_follow_navigation(&mut game.level, save)?;
         Ok(game)
     }
 
@@ -2071,6 +2167,7 @@ impl Game {
         // rather than from the map's spawn point; see
         // `Systems::sync_actor_from_transforms`'s doc.
         Systems::sync_actor_from_transforms(&mut self.level);
+        self.systems.ai.restore_navigation();
         // `SECTION_MAKER_CHILDREN` (29, M9.5), part two: links each child
         // `Self::restore_maker_children` recreated above back onto its
         // maker's own live-child list, now that its restored health/AI

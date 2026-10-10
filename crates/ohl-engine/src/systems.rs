@@ -47,7 +47,7 @@ use ohl_render::{FreeFlyCamera, MoveInput};
 use crate::USE_RADIUS;
 use crate::ai::AiState;
 use crate::combat::CombatState;
-use crate::components::{HullLift, StudioAnim, StudioGait};
+use crate::components::{StudioAnim, StudioGait};
 use crate::input::Input;
 use crate::level::Level;
 use crate::pickups::PickupsState;
@@ -109,6 +109,7 @@ struct MoverMonster {
     entity: Entity,
     origin: Vec3,
     hull: Hull,
+    body_frame: ohl_ai::BodyFrame,
     /// Its species table says it opens doors.
     opens_doors: bool,
     /// A mover pushes it, and is blocked by it (`Systems::moved_by_movers`).
@@ -694,18 +695,18 @@ impl Systems {
     /// belongs here, once, right after the load has settled: copy the
     /// just-restored `Transform` onto `Actor` for every monster, so a
     /// monster's *next* think step starts from the save's position rather
-    /// than the map's. The copy puts back the monster's [`HullLift`], which
-    /// is derived from its species at spawn and so never saved.
+    /// than the map's. Both components keep the same authored anchor.
     pub(crate) fn sync_actor_from_transforms(level: &mut Level) {
-        for (transform, actor, lift) in &mut level
+        for (transform, actor) in &mut level
             .registry
             .world
-            .query::<(&Transform, &mut ohl_ai::Actor, Option<&HullLift>)>()
+            .query::<(&Transform, &mut ohl_ai::Actor)>()
             .with::<&ohl_ai::MonsterAi>()
         {
-            actor.origin = transform.origin + Vec3::Z * lift.map_or(0.0, |lift| lift.0);
+            actor.origin = transform.origin;
             actor.yaw = transform.angles.y;
         }
+        crate::ai::AiState::configure_actor_models(level);
     }
 
     /// `SECTION_PROJECTILES` (26): live projectiles and placed deployables.
@@ -868,6 +869,17 @@ impl Systems {
     #[must_use]
     pub fn projectile_count(&self) -> usize {
         self.projectiles.count()
+    }
+
+    pub(crate) fn timed_blast_threat(
+        &self,
+        collision: &ohl_physics::CollisionModel,
+        origin: Vec3,
+        hull: ohl_physics::Hull,
+        horizon: f32,
+    ) -> Option<crate::projectiles::TimedBlastThreat> {
+        self.projectiles
+            .timed_blast_threat(collision, origin, hull, horizon)
     }
 
     /// Whether this frame draws a view model.
@@ -1052,7 +1064,7 @@ impl Systems {
         );
         self.player_systems(level, input, dt); // 3
         Self::actor_sync(level, camera, controller, dt); // 4
-        self.rebuild_hitbox_index(level, controller); // 5
+        self.rebuild_hitbox_index(level); // 5
         self.begin_map_effects(level, controller, dt); // 5b
         // A dead skirmish player's fire button is a respawn click (phase
         // 13c), not a shot, and a corpse neither reloads nor switches
@@ -1120,8 +1132,8 @@ impl Systems {
         // Doors, platforms and trains moved by last step's map logic must
         // collide where they now are, not where they were compiled.
         level.sync_brush_collision(dt);
-        // A `func_wall_toggle` switched on around the player or a monster
-        // waits, non-solid, until they have stepped out of it.
+        // A newly enabled wall waits independently in each collision model
+        // for that model's occupants, even when player movement is skipped.
         level.hold_toggled_walls_for_occupants(
             level
                 .collision
@@ -1324,6 +1336,7 @@ impl Systems {
         if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(player) {
             actor.origin = origin;
             actor.view_ofs = controller.eye_position() - origin;
+            actor.hull = controller.state.hull();
             actor.yaw = camera.yaw;
             if let Some(health) = health {
                 actor.health = health.current;
@@ -1353,10 +1366,7 @@ impl Systems {
     /// satchel must stay shootable — and instead ignored per trace by
     /// whichever trace must not hit itself (`crate::projectiles`' module
     /// doc; `ohl_combat::Projectile::self_id`/`owner`).
-    fn rebuild_hitbox_index(&mut self, level: &mut Level, controller: &PlayerController) {
-        if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(level.player) {
-            actor.hull = controller.state.hull();
-        }
+    fn rebuild_hitbox_index(&mut self, level: &mut Level) {
         crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level);
         self.projectiles.update_blast_bounds(&self.hitboxes);
     }
@@ -1474,7 +1484,15 @@ impl Systems {
     /// Phase 8 — AI think and navigation. Runs before damage resolution on
     /// purpose: see the module note.
     fn ai_think(&mut self, level: &mut Level, dt: f32) {
-        self.ai.think(level, dt, &mut self.damage_queue);
+        self.ai.think(
+            level,
+            dt,
+            &mut self.damage_queue,
+            &crate::ai::GrenadeSafetyContext {
+                projectiles: &self.projectiles,
+                hitboxes: &self.hitboxes,
+            },
+        );
         for request in self.ai.take_projectile_requests() {
             self.projectiles.spawn_request(level, &request);
         }
@@ -1497,22 +1515,18 @@ impl Systems {
     /// was before this phase existed. Phase 5 catches up the following
     /// step, once this phase has run.
     ///
-    /// A monster held by a `scripted_sequence` follows the script's route
-    /// in phase 8 too, so its model must also follow its current `Actor`.
-    /// Scripted teleports and resets (`crate::ai`'s `place`) already write
-    /// both components with the same lift conversion, so this copy preserves
-    /// their placement as well as displaying scripted walks and turns.
-    ///
-    /// The copy takes off the monster's [`HullLift`]: `Actor` is the
-    /// centre of its hull, [`Transform`] its feet.
+    /// Scripted approach and facing also update Actor. Explicit script
+    /// placement writes Actor and Transform together, so copying the actor
+    /// here preserves those placements while keeping held locomotion visible
+    /// to rendering, posed hitboxes and saves throughout possession.
     fn sync_monster_transforms(level: &mut Level) {
-        for (actor, transform, lift) in &mut level
+        for (actor, transform) in &mut level
             .registry
             .world
-            .query::<(&ohl_ai::Actor, &mut Transform, Option<&HullLift>)>()
+            .query::<(&ohl_ai::Actor, &mut Transform)>()
             .with::<&ohl_ai::MonsterAi>()
         {
-            transform.origin = actor.origin - Vec3::Z * lift.map_or(0.0, |lift| lift.0);
+            transform.origin = actor.origin;
             transform.angles.y = actor.yaw;
         }
     }
@@ -1796,6 +1810,7 @@ impl Systems {
                     entity,
                     origin: actor.origin,
                     hull: actor.hull,
+                    body_frame: actor.body_frame,
                     opens_doors: spec.is_some_and(|spec| spec.can_open_doors),
                     moved_by_movers: !not_solid && Self::moved_by_movers(&kind, spec),
                 }
@@ -1857,12 +1872,14 @@ impl Systems {
             if !monster.opens_doors {
                 continue;
             }
-            let (mins, maxs) = HULL_SIZES[monster.hull.index()];
+            let (mins, maxs) = monster
+                .body_frame
+                .world_bounds(monster.hull, monster.origin);
             opened += level.simulation.touch_doors_by(
                 &mut level.registry,
                 Some(monster.entity),
-                monster.origin + Vec3::from_array(mins),
-                monster.origin + Vec3::from_array(maxs),
+                mins,
+                maxs,
             );
         }
         opened
@@ -1888,12 +1905,9 @@ impl Systems {
     /// (`ohl_physics::CollisionModel::trace_brush`): a monster that is
     /// still inside the mover at the place the mover's own move would have
     /// carried it to was inside it *before* the move too, so the embed is
-    /// not this step's doing and the monster is left alone. That is what
-    /// keeps a monster whose hull still starts a little inside the floor
-    /// it stands on (one with no floor within reach at spawn, or a kind
-    /// with no [`HullLift`]) from being "blocked" by the floor of every
-    /// lift it stands on, on every step. The push moves `Actor` (the hull
-    /// centre) and puts [`Transform`] its lift below.
+    /// not this step's doing and the monster is left alone. An authored
+    /// feet anchor on the mover's surface is an ordinary rider; only a
+    /// genuinely preexisting proxy penetration takes this branch.
     ///
     /// Every blocked mover then goes through `Simulation::block_movers`
     /// once per step, however many things blocked it: a door reverses and
@@ -1905,6 +1919,8 @@ impl Systems {
     /// `DamageType::CRUSH`, the type `crate::damage_map` maps to the
     /// player's own `Crush` kind, and with no attacker: nobody is credited
     /// with a door.
+    // Keep rider/push resolution and its one damage dispatch in phase order.
+    #[allow(clippy::too_many_lines)]
     fn resolve_blocked_movers(&mut self, level: &mut Level, dt: f32) {
         let mut blocked: Vec<(Entity, Entity)> = Vec::new();
         for brush in std::mem::take(&mut level.movers_blocked) {
@@ -1918,8 +1934,38 @@ impl Systems {
         let monsters = Self::thinking_monsters(level);
         if let Some(collision) = level.monster_collision.as_ref() {
             for monster in monsters.iter().filter(|monster| monster.moved_by_movers) {
-                let (origin, hull) = (monster.origin, monster.hull);
+                let hull = monster.hull;
+                let origin = monster.body_frame.anchor_to_query(hull, monster.origin);
                 let probe = collision.trace(hull, origin, origin);
+                // A descending or lateral platform can leave its passenger clear
+                // instead of embedding it. Test its previous support before the
+                // existing penetration-only push path. TODO(black-box): this is
+                // project-authored translational rider behavior.
+                if !probe.start_solid
+                    && let Some((mover, brush, candidate)) =
+                        Self::supported_mover_carry(level, collision, hull, origin, dt)
+                {
+                    let sweep = collision.trace_ignoring(hull, origin, candidate, Some(brush));
+                    let destination = collision.trace(hull, candidate, candidate);
+                    if sweep.blocked() || destination.start_solid || destination.all_solid {
+                        blocked.push((mover, monster.entity));
+                    } else {
+                        let anchor = monster.body_frame.query_to_anchor(hull, candidate);
+                        if let Ok(mut actor) = level
+                            .registry
+                            .world
+                            .get::<&mut ohl_ai::Actor>(monster.entity)
+                        {
+                            actor.origin = anchor;
+                        }
+                        if let Ok(mut transform) =
+                            level.registry.world.get::<&mut Transform>(monster.entity)
+                        {
+                            transform.origin = anchor;
+                        }
+                    }
+                    continue;
+                }
                 let (true, Some(brush)) = (probe.start_solid, probe.brush_index) else {
                     continue;
                 };
@@ -1931,20 +1977,37 @@ impl Systems {
                 // as the player's push reads it: a conveyor's belt is a
                 // floor, not a piston, so it neither shoves a monster
                 // caught in its hull nor counts as blocked by one.
-                let velocity = level
+                let motion_brush = level
                     .brush_collision
                     .iter()
                     .find(|(entity, _)| *entity == mover)
-                    .map_or(Vec3::ZERO, |(_, brush)| {
-                        level.brush_mover_velocity(*brush, origin)
-                    });
+                    .map(|(_, brush)| *brush);
+                let velocity = motion_brush.map_or(Vec3::ZERO, |brush| {
+                    level.brush_mover_velocity(brush, origin)
+                });
                 if velocity == Vec3::ZERO {
                     continue;
                 }
                 let candidate = origin + velocity * dt;
-                if collision
-                    .trace_brush(hull, candidate, candidate, brush)
-                    .start_solid
+                // Project-authored preexisting-overlap policy: compare the exact
+                // rigid pose step, not its tangent push approximation. TODO(black-box).
+                let carried = motion_brush
+                    .and_then(|brush| {
+                        level.rotational_carry(brush, origin, dt).map(|rotated| {
+                            rotated
+                                + level
+                                    .brush_velocity
+                                    .get(&brush)
+                                    .copied()
+                                    .unwrap_or(Vec3::ZERO)
+                                    * dt
+                        })
+                    })
+                    .unwrap_or(candidate);
+                if carried.is_finite()
+                    && collision
+                        .trace_brush(hull, carried, carried, brush)
+                        .start_solid
                 {
                     continue;
                 }
@@ -1952,6 +2015,7 @@ impl Systems {
                     blocked.push((mover, monster.entity));
                     continue;
                 }
+                let candidate = monster.body_frame.query_to_anchor(hull, candidate);
                 if let Ok(mut actor) = level
                     .registry
                     .world
@@ -1959,11 +2023,10 @@ impl Systems {
                 {
                     actor.origin = candidate;
                 }
-                let lift = crate::ai::hull_lift_of(level, monster.entity);
                 if let Ok(mut transform) =
                     level.registry.world.get::<&mut Transform>(monster.entity)
                 {
-                    transform.origin = candidate - Vec3::Z * lift;
+                    transform.origin = candidate;
                 }
             }
         }
@@ -1997,6 +2060,63 @@ impl Systems {
                 },
             });
         }
+    }
+
+    /// Recover previous support for a translating mover without retaining a
+    /// ground entity on the actor. Translating the query by the brush's exact
+    /// displacement tests the old relative pose against its current tree.
+    /// Rotating brushes keep the existing push path: rotating an axis-aligned
+    /// hull query is not equivalent to testing its previous pose.
+    fn supported_mover_carry(
+        level: &Level,
+        collision: &ohl_physics::CollisionModel,
+        hull: ohl_physics::Hull,
+        origin: Vec3,
+        dt: f32,
+    ) -> Option<(Entity, ohl_physics::BrushId, Vec3)> {
+        if !dt.is_finite() || dt <= 0.0 || !origin.is_finite() {
+            return None;
+        }
+        for &(mover, brush) in &level.monster_brush_collision {
+            let Some((_, motion_brush)) = level
+                .brush_collision
+                .iter()
+                .find(|(entity, _)| *entity == mover)
+            else {
+                continue;
+            };
+            if level.brush_rotation.contains_key(motion_brush) {
+                continue;
+            }
+            let step = level
+                .brush_velocity
+                .get(motion_brush)
+                .copied()
+                .unwrap_or(Vec3::ZERO)
+                * dt;
+            // Preserve the seated brush-relative point before returning to
+            // world space. Repeated origin + step rounding can otherwise put
+            // exact contact just inside the translated support plane.
+            let offset = collision.brush_origin(brush);
+            let candidate = (origin - (offset - step)) + offset;
+            if step == Vec3::ZERO || !step.is_finite() || !candidate.is_finite() {
+                continue;
+            }
+            let support = collision.trace_brush(
+                hull,
+                candidate,
+                candidate - Vec3::Z * (2.0 * ohl_physics::DIST_EPSILON),
+                brush,
+            );
+            if !support.start_solid
+                && !support.all_solid
+                && support.fraction < 1.0
+                && support.plane_normal.z >= ohl_physics::MoveConfig::default().slope_limit
+            {
+                return Some((mover, brush, candidate));
+            }
+        }
+        None
     }
 
     /// The entity an attached brush id belongs to, in either of `Level`'s
@@ -2302,6 +2422,305 @@ impl Default for Systems {
 #[cfg(test)]
 mod tests {
     use super::{Input, PendingEdges, Systems};
+
+    #[test]
+    fn rotating_mover_push_samples_the_centered_body_and_stores_the_anchor() {
+        use ohl_ai::Actor;
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        use ohl_game::registry::Transform;
+        use ohl_physics::Vec3;
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text("{\"classname\" \"worldspawn\"}\n{\"classname\" \"info_player_start\" \"origin\" \"1000 1000 1000\"}\n{\"classname\" \"monster_barney\" \"origin\" \"0 32 0\"}\n{\"classname\" \"func_door\" \"model\" \"*1\" \"angle\" \"-1\"}");
+        let heads = builder.push_collision_hulls(&[]);
+        builder.push_model([-1024.0; 3], [1024.0; 3], [0.0; 3], heads, 2, 0, 0);
+        let mins = [-64.0, -64.0, -64.0];
+        let maxs = [64.0, 64.0, 1.0];
+        let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+        builder.push_model(mins, maxs, [0.0; 3], heads, 2, 0, 0);
+        let mut level = crate::level::Level::from_bytes(
+            &crate::MemoryAssets::new(),
+            "ohl_frame_mover",
+            &builder.build(),
+        )
+        .expect("synthetic mover");
+        let mut systems = Systems::default();
+        systems.ai.attach_level(
+            &mut level,
+            ohl_campaign::Difficulty::Easy,
+            &ohl_campaign::SkillTable::default(),
+        );
+        let entity = level
+            .registry
+            .world
+            .query::<(ohl_game::hecs::Entity, &ohl_ai::MonsterAi)>()
+            .iter()
+            .next()
+            .expect("actor")
+            .0;
+        let brush = level.brush_collision[0].1;
+        // A synthetic phase-2 motion sample: top advanced into the feet by
+        // one unit, with translation and an off-axis rotation about X.
+        level.brush_velocity.insert(brush, Vec3::Z * 10.0);
+        level.brush_rotation.insert(
+            brush,
+            crate::level::BrushRotation {
+                pivot: Vec3::ZERO,
+                angular_velocity: Vec3::X,
+                angle_degrees: 0.0,
+            },
+        );
+        systems.resolve_blocked_movers(&mut level, 0.1);
+        let actor = level.registry.world.get::<&Actor>(entity).expect("actor");
+        let transform = level
+            .registry
+            .world
+            .get::<&Transform>(entity)
+            .expect("transform");
+        assert!(
+            actor.origin.abs_diff_eq(Vec3::new(0.0, 28.4, 4.2), 0.001),
+            "the nonzero body offset changes angular point velocity: {:?}",
+            actor.origin
+        );
+        assert_eq!(actor.origin, transform.origin);
+        let collision = level.monster_collision.as_ref().expect("collision");
+        assert!(
+            !collision
+                .trace(actor.hull, actor.query_origin(), actor.query_origin())
+                .start_solid
+        );
+    }
+
+    // A generated phase-2 motion sample, with an ordinary attached thinking actor.
+    // The selected standing hull expands the first brush's XY square to +/-100;
+    // the second brush begins at query y=100 and blocks only an outward push.
+    fn rotating_overlap_fixture(
+        query_y: f32,
+        translation: ohl_physics::Vec3,
+        angle: f32,
+    ) -> (crate::level::Level, Systems, ohl_game::hecs::Entity) {
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        use ohl_physics::Vec3;
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text(&format!(
+            "{{\"classname\" \"worldspawn\"}}\n\
+             {{\"classname\" \"info_player_start\" \"origin\" \"1000 1000 1000\"}}\n\
+             {{\"classname\" \"monster_barney\" \"origin\" \"50 {query_y} 0\"}}\n\
+             {{\"classname\" \"func_rotating\" \"model\" \"*1\" \"dmg\" \"7\"}}\n\
+             {{\"classname\" \"func_wall\" \"model\" \"*2\"}}"
+        ));
+        let heads = builder.push_collision_hulls(&[]);
+        builder.push_model([-1024.0; 3], [1024.0; 3], [0.0; 3], heads, 2, 0, 0);
+        for (mins, maxs) in [
+            ([-84.0, -84.0, -64.0], [84.0, 84.0, 64.0]),
+            ([-200.0, 116.0, -100.0], [200.0, 200.0, 100.0]),
+        ] {
+            let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+            builder.push_model(mins, maxs, [0.0; 3], heads, 2, 0, 0);
+        }
+        let mut level = crate::level::Level::from_bytes(
+            &crate::MemoryAssets::new(),
+            "ohl_rotating_overlap",
+            &builder.build(),
+        )
+        .expect("synthetic two-brush scene");
+        let mut systems = Systems::default();
+        systems.ai.attach_level(
+            &mut level,
+            ohl_campaign::Difficulty::Easy,
+            &ohl_campaign::SkillTable::default(),
+        );
+        let entity = level
+            .registry
+            .world
+            .query::<(ohl_game::hecs::Entity, &ohl_ai::MonsterAi)>()
+            .iter()
+            .next()
+            .expect("thinking actor")
+            .0;
+        let brush = level.brush_collision[0].1;
+        level.brush_velocity.insert(brush, translation / 0.1);
+        if angle != 0.0 {
+            level.brush_rotation.insert(
+                brush,
+                crate::level::BrushRotation {
+                    pivot: Vec3::ZERO,
+                    angular_velocity: Vec3::Z * (angle / 0.1),
+                    angle_degrees: 0.0,
+                },
+            );
+        }
+        (level, systems, entity)
+    }
+
+    #[test]
+    fn rotating_preexisting_overlap_does_not_queue_crush() {
+        use ohl_ai::Actor;
+        use ohl_game::registry::Transform;
+        use ohl_physics::Vec3;
+        for translation in [Vec3::ZERO, Vec3::X * 2.0] {
+            let (mut level, mut systems, entity) = rotating_overlap_fixture(95.1, translation, 0.1);
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            assert!(actor.alive && actor.origin.is_finite());
+            let origin = actor.query_origin();
+            assert_eq!(origin, Vec3::new(50.0, 95.1, 36.0));
+            let brush = level.monster_brush_collision[0].1;
+            let blocker = level.monster_brush_collision[1].1;
+            let motion_brush = level.brush_collision[0].1;
+            let collision = level.monster_collision.as_ref().unwrap();
+            let mut previous = collision.clone();
+            previous.set_brush_pose(
+                brush,
+                -translation,
+                Vec3::ZERO,
+                Vec3::Z,
+                -0.1_f32.to_degrees(),
+            );
+            assert!(
+                previous
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid
+            );
+            assert!(
+                collision
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid
+            );
+            assert_eq!(
+                collision.trace(actor.hull, origin, origin).brush_index,
+                Some(brush)
+            );
+            let exact = level.rotational_carry(motion_brush, origin, 0.1).unwrap() + translation;
+            let tangent = origin + level.brush_mover_velocity(motion_brush, origin) * 0.1;
+            assert!(
+                collision
+                    .trace_brush(actor.hull, exact, exact, brush)
+                    .start_solid
+            );
+            assert!(
+                !collision
+                    .trace_brush(actor.hull, tangent, tangent, brush)
+                    .start_solid
+            );
+            for point in [origin, exact] {
+                assert!(
+                    !collision
+                        .trace_brush(actor.hull, point, point, blocker)
+                        .start_solid
+                );
+            }
+            assert!(
+                collision
+                    .trace_brush(actor.hull, tangent, tangent, blocker)
+                    .start_solid
+            );
+            assert_eq!(
+                collision.trace(actor.hull, tangent, tangent).brush_index,
+                Some(blocker)
+            );
+            assert!(systems.damage_queue.is_empty());
+
+            systems.resolve_blocked_movers(&mut level, 0.1);
+            assert!(
+                systems.damage_queue.is_empty(),
+                "preexisting rotated overlap must not queue CRUSH"
+            );
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                actor.origin
+            );
+            assert_eq!(
+                level
+                    .registry
+                    .world
+                    .get::<&Transform>(entity)
+                    .unwrap()
+                    .origin,
+                actor.origin
+            );
+        }
+    }
+
+    #[test]
+    fn rotating_new_overlap_and_translation_keep_their_blocking_policy() {
+        use ohl_ai::Actor;
+        use ohl_physics::Vec3;
+        for (query_y, translation, angle, preexisting) in [
+            (95.7, Vec3::ZERO, 0.1_f32, false),
+            (95.1, Vec3::X * 2.0, 0.0, true),
+            (99.5, Vec3::Y, 0.0, false),
+        ] {
+            let (mut level, mut systems, entity) =
+                rotating_overlap_fixture(query_y, translation, angle);
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            assert!(actor.alive && actor.origin.is_finite());
+            let origin = actor.query_origin();
+            let (mover, brush) = level.monster_brush_collision[0];
+            let blocker = level.monster_brush_collision[1].1;
+            let motion_brush = level.brush_collision[0].1;
+            let collision = level.monster_collision.as_ref().unwrap();
+            let mut previous = collision.clone();
+            previous.set_brush_pose(
+                brush,
+                -translation,
+                Vec3::ZERO,
+                Vec3::Z,
+                -angle.to_degrees(),
+            );
+            assert_eq!(
+                previous
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid,
+                preexisting
+            );
+            assert!(
+                collision
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid
+            );
+            let exact = level
+                .rotational_carry(motion_brush, origin, 0.1)
+                .unwrap_or(origin)
+                + translation;
+            let tangent = origin + level.brush_mover_velocity(motion_brush, origin) * 0.1;
+            assert_eq!(
+                collision
+                    .trace_brush(actor.hull, exact, exact, brush)
+                    .start_solid,
+                preexisting
+            );
+            assert!(
+                !collision
+                    .trace_brush(actor.hull, origin, origin, blocker)
+                    .start_solid
+            );
+            if !preexisting {
+                assert!(
+                    !collision
+                        .trace_brush(actor.hull, tangent, tangent, brush)
+                        .start_solid
+                );
+                assert!(
+                    collision
+                        .trace_brush(actor.hull, tangent, tangent, blocker)
+                        .start_solid
+                );
+            }
+            assert!(systems.damage_queue.is_empty());
+            systems.resolve_blocked_movers(&mut level, 0.1);
+            assert_eq!(systems.damage_queue.len(), usize::from(!preexisting));
+            if let Some(hit) = systems.damage_queue.first() {
+                assert_eq!(hit.target, entity);
+                assert_eq!(hit.info.kind, ohl_combat::DamageType::CRUSH);
+                assert_eq!(hit.info.amount.to_bits(), 7.0_f32.to_bits());
+                assert_eq!(hit.info.attacker, None);
+                assert_eq!(hit.info.inflictor, Some(crate::ids::entity_id(mover)));
+            }
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                actor.origin
+            );
+        }
+    }
 
     fn systems() -> Systems {
         Systems::default()

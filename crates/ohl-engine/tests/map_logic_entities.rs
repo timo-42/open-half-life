@@ -465,7 +465,10 @@ fn a_wall_switched_on_around_the_player_waits_until_they_step_out() {
         !game.position_is_in_solid(BLOCK_PROBE),
         "the block must not turn solid around the player"
     );
-    assert!(!monster_model_is_solid_at(&game, BLOCK_PROBE));
+    assert!(
+        monster_model_is_solid_at(&game, BLOCK_PROBE),
+        "player-only occupancy leaves the monster barrier solid"
+    );
 
     let start = game.player_origin();
     tick_n(
@@ -489,8 +492,8 @@ fn a_wall_switched_on_around_the_player_waits_until_they_step_out() {
     assert!(monster_model_is_solid_at(&game, BLOCK_PROBE));
 }
 
-/// The same block switched on around a monster waits too, in both
-/// collision models, while the player stands well clear of it.
+/// The same block waits in the monster model while preserving the player
+/// barrier. Repeated ticks require the monster sync to queue re-enable edges.
 #[test]
 fn a_wall_switched_on_around_a_monster_waits_for_it() {
     let monster = "{\n\"classname\" \"monster_scientist\"\n\"targetname\" \"ohl_inside\"\n\
@@ -513,11 +516,17 @@ fn a_wall_switched_on_around_a_monster_waits_for_it() {
         origin.x.abs() < WALL_TOGGLE_BLOCK_MAX[0] && origin.y.abs() < WALL_TOGGLE_BLOCK_MAX[1],
         "the monster is still standing inside the block: {origin:?}"
     );
-    assert!(
-        !game.position_is_in_solid(BLOCK_PROBE),
-        "the block must not turn solid around a monster"
-    );
-    assert!(!monster_model_is_solid_at(&game, BLOCK_PROBE));
+    for _ in 0..6 {
+        assert!(
+            game.position_is_in_solid(BLOCK_PROBE),
+            "NPC-only occupancy preserves the player barrier"
+        );
+        assert!(
+            !monster_model_is_solid_at(&game, BLOCK_PROBE),
+            "the block keeps waiting for its monster occupant"
+        );
+        tick_n(&mut game, 1, &Input::default());
+    }
 }
 
 /// A `monster_generic` spawned with its published "Not solid" flag is not
@@ -534,7 +543,11 @@ fn a_not_solid_prop_inside_does_not_hold_the_wall_up() {
         assert_eq!(game.monster_count(), 1, "the prop spawned");
         tick_n(&mut game, 60, &Input::default());
         assert!(block_is_on(&game));
-        !game.position_is_in_solid(BLOCK_PROBE)
+        assert!(
+            game.position_is_in_solid(BLOCK_PROBE),
+            "a prop does not suspend the unrelated player's barrier"
+        );
+        !monster_model_is_solid_at(&game, BLOCK_PROBE)
     };
     assert!(held("0"), "a solid prop inside holds the wall up");
     assert!(!held("4"), "a Not solid prop does not");
@@ -547,8 +560,14 @@ fn a_wall_switched_on_with_nobody_inside_is_solid_at_once() {
     let mut game = block_game("ohlblockemptysynth", [-160.0, 0.0, 37.0], "");
     tick_n(&mut game, 60, &Input::default());
     assert!(block_is_on(&game));
-    assert!(game.position_is_in_solid(BLOCK_PROBE));
-    assert!(monster_model_is_solid_at(&game, BLOCK_PROBE));
+    assert!(
+        game.position_is_in_solid(BLOCK_PROBE),
+        "empty player barrier solidifies"
+    );
+    assert!(
+        monster_model_is_solid_at(&game, BLOCK_PROBE),
+        "empty monster barrier solidifies"
+    );
 }
 
 // ---------------------------------------------------------------------

@@ -196,7 +196,7 @@ fn a_door_closing_on_the_player_pushes_them_then_reverses_and_deals_its_dmg() {
 fn monster_route_entities(door_spawnflags: u32) -> String {
     let script = entity_block(
         "scripted_sequence",
-        [320.0, 0.0, 36.0],
+        [320.0, 0.0, 0.0],
         0.0,
         &[
             ("targetname", "ohl_script"),
@@ -208,7 +208,7 @@ fn monster_route_entities(door_spawnflags: u32) -> String {
     );
     let guard = entity_block(
         "monster_barney",
-        [60.0, 0.0, 36.0],
+        [60.0, 0.0, 0.0],
         0.0,
         &[("targetname", "ohl_guard")],
     );
@@ -298,7 +298,7 @@ fn a_monsters_cant_door_stays_closed_against_a_monsters_route() {
 /// leaf pushes toward, so the leaf's leading face reaches the guard
 /// part-way through its close, pushes it, and runs it into the corridor's
 /// `y = -96` wall with travel still left.
-const DOORWAY_MARK: [f32; 3] = [216.0, -40.0, 36.0];
+const DOORWAY_MARK: [f32; 3] = [216.0, -40.0, 0.0];
 
 /// The door's `wait` in [`monster_in_doorway_entities`]: long enough for
 /// the guard to finish its walk into the doorway before the leaf closes.
@@ -324,7 +324,7 @@ fn monster_in_doorway_entities() -> String {
     );
     let guard = entity_block(
         "monster_barney",
-        [60.0, -40.0, 36.0],
+        [60.0, -40.0, 0.0],
         0.0,
         &[("targetname", "ohl_guard")],
     );
@@ -432,7 +432,7 @@ fn monster_of_kind_at_the_door_entities(classname: &str) -> String {
     // inside `ohl_game::logic`'s four-unit door touch margin.
     let guard = entity_block(
         classname,
-        [ROTATING_DOOR_MINS[0] - 16.0 - 2.0, 0.0, 36.0],
+        [ROTATING_DOOR_MINS[0] - 16.0 - 2.0, 0.0, 0.0],
         0.0,
         &[("targetname", "ohl_guard")],
     );
@@ -523,6 +523,25 @@ fn named_door_state(game: &Game, name: &str) -> MoverState {
         .state
 }
 
+#[test]
+fn a_feet_actors_upper_body_touch_opens_a_raised_door() {
+    let entities = "{\"classname\" \"worldspawn\"}\n{\"classname\" \"info_player_start\" \"origin\" \"2000 2000 2000\"}\n{\"classname\" \"monster_barney\" \"origin\" \"46 0 0\"}\n{\"classname\" \"func_door\" \"model\" \"*1\" \"angle\" \"90\" \"speed\" \"50\" \"wait\" \"-1\"}";
+    let raised = Submodel {
+        mins: [64.0, -32.0, 48.0],
+        maxs: [72.0, 32.0, 80.0],
+    };
+    let mut game = built_map(
+        entities,
+        &[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)],
+        &[raised],
+    );
+    stand(&mut game, 5);
+    assert!(
+        game.monster_doors_opened_count() > 0,
+        "only the feet actor's upper proxy overlaps the leaf"
+    );
+}
+
 /// A lift: a `func_door` moving up (`angle` `-1`) whose 128-wide box has
 /// its top face at its origin, rising 32 units at 50 units/second when
 /// the `trigger_auto` fires it, with `dmg` [`DOOR_DMG`].
@@ -553,12 +572,11 @@ fn lift_rider_entities(guard_z: f32) -> String {
 
 /// A monster standing on a rising lift is carried up with it — pushed by
 /// the lift's top face each step — and the lift is never blocked by its
-/// own passenger: it rises the whole way and deals nothing. The guard is
-/// placed the way every synthetic fixture here places a monster, its
-/// origin at the centre of its hull, 36 units above the lift's top.
+/// own passenger: it rises the whole way and deals nothing. The guard's
+/// authored feet anchor starts exactly on the lift's top.
 #[test]
 fn a_monster_riding_a_lift_is_carried_up_and_never_blocks_it() {
-    let mut game = built_map(&lift_rider_entities(36.0), &[], &[LIFT]);
+    let mut game = built_map(&lift_rider_entities(0.0), &[], &[LIFT]);
     let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
     let health = actor_health(&game, guard);
     let mut saw_closing = false;
@@ -570,22 +588,217 @@ fn a_monster_riding_a_lift_is_carried_up_and_never_blocks_it() {
     assert!(!saw_closing, "the lift never reversed on its own rider");
     let z = actor_origin(&game, guard).z;
     assert!(
-        (z - 68.0).abs() < 1.5,
+        (z - 32.0).abs() < 1.5,
         "carried the lift's 32 units up: z {z}"
     );
     assert!((actor_health(&game, guard) - health).abs() < f32::EPSILON);
 }
 
-/// The same lift with the guard placed the way real maps place monsters:
-/// its origin at its feet, on the lift's top face. Every AI trace here
-/// reads an origin as the hull's centre, so that guard's hull is half
-/// inside the lift from the moment it spawns. That embed is not the
-/// lift's doing this step, so the lift neither shoves the guard nor counts
-/// as blocked by it: it rises the whole way, never reverses, and deals
-/// nothing — rather than reversing and hurting its passenger every step.
+/// Ordinary auto-triggered translating platforms; no actor, route or mover
+/// state is assigned by these controls. The distant player leaves Barney idle.
+fn supported_monster_platform(
+    angle: i32,
+    speed: f32,
+    lip: f32,
+    guard_x: f32,
+    world: &[CollisionBrush],
+) -> Game {
+    let entities = lift_rider_entities(0.0)
+        .replace("\"angle\" \"-1\"", &format!("\"angle\" \"{angle}\""))
+        .replace("\"speed\" \"50\"", &format!("\"speed\" \"{speed}\""))
+        .replace("\"lip\" \"32\"", &format!("\"lip\" \"{lip}\""));
+    // Change only the monster's authored placement, not either mover pose.
+    let guard = entity_block(
+        "monster_barney",
+        [0.0, 0.0, 0.0],
+        0.0,
+        &[("targetname", "ohl_guard")],
+    );
+    let placed = entity_block(
+        "monster_barney",
+        [guard_x, 0.0, 0.0],
+        0.0,
+        &[("targetname", "ohl_guard")],
+    );
+    assert!(entities.contains(&guard));
+    built_map(&entities.replace(&guard, &placed), world, &[LIFT])
+}
+
+// These exact zero/unchanged-health/full-trace values are the physical prerequisites.
+#[allow(clippy::float_cmp)]
+fn idle_monster_query(
+    game: &Game,
+    guard: ohl_game::hecs::Entity,
+) -> (ohl_physics::Hull, glam::Vec3) {
+    let ai = game
+        .registry()
+        .world
+        .get::<&ohl_ai::MonsterAi>(guard)
+        .expect("thinking walker");
+    assert!(
+        ai.route.waypoints.is_empty() && ai.route.is_finished(),
+        "ordinary idle route stays empty"
+    );
+    assert_eq!(ai.move_speed, 0.0, "no AI movement can supply the ride");
+    let actor = game.registry().world.get::<&ohl_ai::Actor>(guard).unwrap();
+    assert!(actor.alive);
+    assert!(!ohl_ai::movement::flies(actor.hull));
+    (actor.hull, actor.query_origin())
+}
+
+#[test]
+// These exact zero/unchanged-health/full-trace values are the physical prerequisites.
+#[allow(clippy::float_cmp)]
+fn supported_monster_descends_with_a_platform_without_becoming_embedded() {
+    use glam::Vec3;
+    let mut game = supported_monster_platform(-2, 50.0, 32.0, 0.0, &[]);
+    let guard = entity_of_classname(&game, "monster_barney").unwrap();
+    let lift = game.registry().find("ohl_lift")[0];
+    let brush = game
+        .monster_brush_collision()
+        .iter()
+        .find(|(entity, _)| *entity == lift)
+        .unwrap()
+        .1;
+    let health = actor_health(&game, guard);
+    let mut moved = false;
+    for _ in 0..150 {
+        let (hull, before) = idle_monster_query(&game, guard);
+        let model = game.monster_collision().unwrap();
+        let old_platform = model.brush_origin(brush);
+        let support = model.trace_brush(hull, before, before - Vec3::Z * 0.25, brush);
+        assert!(
+            !support.start_solid
+                && !support.all_solid
+                && support.fraction < 1.0
+                && support.plane_normal.z > 0.9,
+            "the actual previous platform supports the idle hull"
+        );
+        stand(&mut game, 1);
+        let model = game.monster_collision().unwrap();
+        let step = model.brush_origin(brush) - old_platform;
+        if step == Vec3::ZERO {
+            continue;
+        }
+        assert!(
+            step.z < 0.0 && step.x == 0.0 && step.y == 0.0,
+            "the ordinary mover really descended"
+        );
+        assert!(
+            !model.trace(hull, before, before).start_solid,
+            "the old rider position is clear after the platform moves away"
+        );
+        let (_, after) = idle_monster_query(&game, guard);
+        assert!(!model.trace(hull, after, after).start_solid);
+        assert!(
+            (after - before - step).length() < 0.001,
+            "CARRY PRIMARY: a supported idle monster follows the descending platform: before={before:?}, after={after:?}, step={step:?}"
+        );
+        let actor = game.registry().world.get::<&ohl_ai::Actor>(guard).unwrap();
+        let transform = game
+            .registry()
+            .world
+            .get::<&ohl_game::registry::Transform>(guard)
+            .unwrap();
+        assert_eq!(
+            actor.origin, transform.origin,
+            "one feet anchor is committed to both components"
+        );
+        moved = true;
+    }
+    assert!(moved);
+    assert_eq!(named_door_state(&game, "ohl_lift"), MoverState::Open);
+    assert!((actor_origin(&game, guard).z + 32.0).abs() < 0.001);
+    assert_eq!(actor_health(&game, guard), health);
+}
+
+#[test]
+// These exact zero/unchanged-health/full-trace values are the physical prerequisites.
+#[allow(clippy::float_cmp)]
+fn supported_monster_carry_does_not_collect_an_unsupported_neighbour() {
+    use glam::Vec3;
+    let mut game = supported_monster_platform(-2, 50.0, 32.0, 128.0, &[]);
+    let guard = entity_of_classname(&game, "monster_barney").unwrap();
+    let lift = game.registry().find("ohl_lift")[0];
+    let brush = game
+        .monster_brush_collision()
+        .iter()
+        .find(|(entity, _)| *entity == lift)
+        .unwrap()
+        .1;
+    let (hull, before) = idle_monster_query(&game, guard);
+    let support =
+        game.monster_collision()
+            .unwrap()
+            .trace_brush(hull, before, before - Vec3::Z * 0.25, brush);
+    assert_eq!(
+        support.fraction, 1.0,
+        "the neighbour has no platform support"
+    );
+    stand(&mut game, 150);
+    assert!(game.monster_collision().unwrap().brush_origin(brush).z < -31.0);
+    assert_eq!(idle_monster_query(&game, guard).1, before);
+}
+
+#[test]
+fn supported_monster_carry_sweeps_other_solids_before_accepting_a_clear_destination() {
+    use glam::Vec3;
+    let wall = CollisionBrush::box_brush([24.0, -128.0, 0.0], [28.0, 128.0, 100.0]);
+    let mut game = supported_monster_platform(0, 6400.0, 64.0, 0.0, &[wall]);
+    let guard = entity_of_classname(&game, "monster_barney").unwrap();
+    let lift = game.registry().find("ohl_lift")[0];
+    let brush = game
+        .monster_brush_collision()
+        .iter()
+        .find(|(entity, _)| *entity == lift)
+        .unwrap()
+        .1;
+    let (hull, before) = idle_monster_query(&game, guard);
+    let support =
+        game.monster_collision()
+            .unwrap()
+            .trace_brush(hull, before, before - Vec3::Z * 0.25, brush);
+    assert!(!support.start_solid && support.fraction < 1.0 && support.plane_normal.z > 0.9);
+    for _ in 0..10 {
+        let old_platform = game.monster_collision().unwrap().brush_origin(brush);
+        stand(&mut game, 1);
+        let model = game.monster_collision().unwrap();
+        let step = model.brush_origin(brush) - old_platform;
+        if step == Vec3::ZERO {
+            continue;
+        }
+        assert!(
+            step.x > 63.0,
+            "ordinary platform crossed the thin obstacle in one tick"
+        );
+        let candidate = before + step;
+        assert!(!model.trace(hull, before, before).start_solid);
+        assert!(
+            !model.trace(hull, candidate, candidate).start_solid,
+            "destination alone is insufficient"
+        );
+        assert!(
+            model
+                .trace_ignoring(hull, before, candidate, Some(brush))
+                .blocked(),
+            "another solid blocks the ride chord"
+        );
+        assert_eq!(
+            idle_monster_query(&game, guard).1,
+            before,
+            "blocked carry must not tunnel"
+        );
+        return;
+    }
+    panic!("ordinary platform never moved");
+}
+
+/// A separate genuinely embedded fixture: the guard's feet begin 36 units
+/// below the lift top. The preexisting penetration is not this step's
+/// doing, so the mover must not reverse or deal damage for it.
 #[test]
 fn a_monster_already_inside_a_lift_does_not_block_it() {
-    let mut game = built_map(&lift_rider_entities(0.0), &[], &[LIFT]);
+    let mut game = built_map(&lift_rider_entities(-36.0), &[], &[LIFT]);
     let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
     let health = actor_health(&game, guard);
     let mut saw_closing = false;
@@ -595,6 +808,11 @@ fn a_monster_already_inside_a_lift_does_not_block_it() {
     }
     assert_eq!(named_door_state(&game, "ohl_lift"), MoverState::Open);
     assert!(!saw_closing, "the lift never reversed");
+    assert_eq!(
+        actor_origin(&game, guard).z.to_bits(),
+        (-36.0_f32).to_bits(),
+        "the old penetration is left alone"
+    );
     assert!((actor_health(&game, guard) - health).abs() < f32::EPSILON);
 }
 
@@ -779,7 +997,15 @@ fn a_monster_that_does_not_open_doors_leaves_one_shut() {
 fn a_door_closing_on(classname: &str, spawnflags: u32) {
     let monster = entity_block(
         classname,
-        [192.0, -40.0, 36.0],
+        [
+            192.0,
+            -40.0,
+            if classname == "monster_barnacle" {
+                96.0
+            } else {
+                36.0
+            },
+        ],
         0.0,
         &[
             ("targetname", "ohl_fixture"),
@@ -818,6 +1044,24 @@ fn a_door_closing_on(classname: &str, spawnflags: u32) {
     let fixture = entity_of_classname(&game, classname).expect("the monster spawned");
     let health = actor_health(&game, fixture);
     let start = actor_origin(&game, fixture);
+    if classname == "monster_barnacle" {
+        let actor = game
+            .registry()
+            .world
+            .get::<&ohl_ai::Actor>(fixture)
+            .expect("actor");
+        assert_eq!(actor.body_frame, ohl_ai::BodyFrame::Ceiling);
+        assert_eq!(
+            actor
+                .body_frame
+                .world_bounds(actor.hull, actor.origin)
+                .1
+                .z
+                .to_bits(),
+            start.z.to_bits()
+        );
+        assert!(actor.eye().z < start.z);
+    }
     let mut saw_closing = false;
     let mut saw_reopen = false;
     for _ in 0..400 {
@@ -859,6 +1103,11 @@ fn a_door_closing_on_a_turret_neither_shoves_it_nor_reverses() {
 #[test]
 fn a_door_closing_on_rooted_furniture_neither_shoves_it_nor_reverses() {
     a_door_closing_on("monster_furniture", 0);
+}
+
+#[test]
+fn a_door_closing_below_a_ceiling_barnacle_keeps_its_authored_anchor() {
+    a_door_closing_on("monster_barnacle", 0);
 }
 
 /// The Nihilanth never moves (M9.45): it hangs where the map put it.

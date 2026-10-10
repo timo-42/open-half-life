@@ -14,6 +14,142 @@ use ohl_formats::test_support::build_collision_room_bsp;
 use ohl_physics::CollisionModel;
 use ohl_world::{BoneMatrix, StudioHitbox, StudioPose};
 
+#[test]
+// Exact fractions distinguish boundary contact from nearby hits; keep all candidates together.
+#[allow(clippy::too_many_lines, clippy::float_cmp)]
+fn boundary_contact_preserves_inside_and_other_candidates() {
+    let world = room();
+    let center = Vec3::new(0.0, 0.0, 64.0);
+    let id = EntityId(901);
+    for rotation in [Quat::IDENTITY, Quat::from_xyzw(0.0, 0.0, 1.0, 0.0)] {
+        let mut entity = EntityHitboxes::new(id, center);
+        entity.rotation = rotation;
+        entity.push_box(0, Vec3::splat(-16.0), Vec3::splat(16.0), HitGroup::Generic);
+        let entities = index_of(vec![entity]);
+        let cast = |start, delta| {
+            trace_attack(
+                &world,
+                &entities,
+                center + rotation * start,
+                center + rotation * (start + delta),
+                TraceMask::ENTITIES_ONLY,
+            )
+        };
+        let inside = cast(Vec3::ZERO, Vec3::X);
+        assert!(
+            inside.entity == Some(id) && inside.fraction == 0.0,
+            "assertion failed: boundary contact preserves strict interior hits"
+        );
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            for sign in [-1.0, 1.0] {
+                let normal = axis * sign;
+                let face = normal * 16.0;
+                let departure = cast(face, normal * 8.0);
+                assert!(
+                    !departure.hit(),
+                    "assertion failed: exact outward boundary contact departs"
+                );
+                for delta in [-normal * 8.0, Vec3::ZERO, normal * -0.0] {
+                    let retained = cast(face, delta);
+                    assert_eq!(retained.entity, Some(id));
+                    assert_eq!(retained.fraction, 0.0);
+                }
+                let tangent = if axis == Vec3::X { Vec3::Y } else { Vec3::X };
+                assert_eq!(cast(face, tangent * 8.0).entity, Some(id));
+                let entry = cast(normal * 32.0, -normal * 32.0);
+                assert_eq!(entry.entity, Some(id));
+                assert_eq!(entry.fraction, 0.5);
+            }
+        }
+        assert!(!cast(Vec3::splat(16.0), Vec3::new(8.0, -8.0, 0.0)).hit());
+        let just_inside = f32::from_bits(16.0_f32.to_bits() - 1);
+        assert_eq!(
+            cast(Vec3::new(just_inside, 0.0, 0.0), Vec3::X * 8.0).entity,
+            Some(id),
+            "no tolerance band may discard an interior start"
+        );
+        let grazing = cast(Vec3::new(-32.0, 16.0, 0.0), Vec3::X * 64.0);
+        assert_eq!(grazing.entity, Some(id));
+        assert_eq!(grazing.fraction, 0.25);
+    }
+
+    // Keep the slab's sub-EPSILON direction policy with an exactly
+    // representable small box, so adding delta does not round back to start.
+    let mut small = EntityHitboxes::new(id, Vec3::ZERO);
+    small.push_box(0, Vec3::ZERO, Vec3::splat(1.0), HitGroup::Generic);
+    let small = index_of(vec![small]);
+    let almost_parallel = trace_attack(
+        &world,
+        &small,
+        Vec3::new(0.0, 0.5, 0.5),
+        Vec3::new(-f32::EPSILON * 0.5, 0.5, 0.5),
+        TraceMask::ENTITIES_ONLY,
+    );
+    assert_eq!(almost_parallel.entity, Some(id));
+
+    let mut flat = EntityHitboxes::new(id, center);
+    flat.push_box(
+        0,
+        Vec3::new(-16.0, -16.0, 0.0),
+        Vec3::new(16.0, 16.0, 0.0),
+        HitGroup::Generic,
+    );
+    assert_eq!(
+        trace_attack(
+            &world,
+            &index_of(vec![flat]),
+            center,
+            center + Vec3::Z,
+            TraceMask::ENTITIES_ONLY,
+        )
+        .entity,
+        Some(id),
+        "degenerate-box policy remains on the old slab path"
+    );
+
+    let mut first = EntityHitboxes::new(id, center);
+    first.push_box(0, Vec3::splat(-16.0), Vec3::splat(16.0), HitGroup::Generic);
+    let mut adjacent = EntityHitboxes::new(EntityId(902), center - Vec3::X * 32.0);
+    adjacent.push_box(0, Vec3::splat(-16.0), Vec3::splat(16.0), HitGroup::Generic);
+    let start = center - Vec3::X * 16.0;
+    let end = center - Vec3::X * 64.0;
+    let other = trace_attack(
+        &world,
+        &index_of(vec![first.clone(), adjacent]),
+        start,
+        end,
+        TraceMask::ENTITIES_ONLY,
+    );
+    assert_eq!(other.entity, Some(EntityId(902)));
+    assert_eq!(other.fraction, 0.0);
+    first.push_box(
+        1,
+        Vec3::new(-48.0, -16.0, -16.0),
+        Vec3::new(-16.0, 16.0, 16.0),
+        HitGroup::Generic,
+    );
+    let same = trace_attack(
+        &world,
+        &index_of(vec![first]),
+        start,
+        end,
+        TraceMask::ENTITIES_ONLY,
+    );
+    assert_eq!(same.entity, Some(id));
+    assert_eq!(same.hitbox, Some(1));
+    let mut only_first = EntityHitboxes::new(id, center);
+    only_first.push_box(0, Vec3::splat(-16.0), Vec3::splat(16.0), HitGroup::Generic);
+    let wall = trace_attack(
+        &world,
+        &index_of(vec![only_first]),
+        start,
+        center - Vec3::X * 300.0,
+        TraceMask::SHOT,
+    );
+    assert!(wall.hit() && wall.entity.is_none());
+    assert!(wall.end.x < -255.0 && wall.end.x > -256.1);
+}
+
 /// The synthetic room: interior `[-256, 256]` on X and Y, `[0, 256]` on Z,
 /// with an 18-unit step at `x` 64..192 and a 19-unit ledge at `x` -192..-64.
 fn room() -> CollisionModel {

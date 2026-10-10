@@ -114,6 +114,7 @@ pub static GRUNT_FLANK: Schedule = Schedule::new(
 );
 
 /// A grunt throws its secondary (grenade) attack.
+/// TODO(black-box): project-authored danger interruption, including the trailing wait.
 pub static GRUNT_GRENADE: Schedule = Schedule::new(
     "ohl/monsters/grunt_grenade",
     &[
@@ -123,7 +124,7 @@ pub static GRUNT_GRENADE: Schedule = Schedule::new(
         Task::RangeAttack2,
         Task::Wait(1.0),
     ],
-    Conditions::GENERAL_INTERRUPTS,
+    Conditions::GENERAL_INTERRUPTS.union(Conditions::HEAR_DANGER),
 );
 
 /// Project-authored secondary schedule; stable name is save-compatible.
@@ -162,7 +163,9 @@ pub static FOLLOW_PLAYER: Schedule = Schedule::new(
     "ohl/monsters/follow_player",
     &[
         Task::SetActivity(Activity::Walk),
-        Task::MoveToTarget { within: 96.0 },
+        Task::MoveToTarget {
+            within: crate::follow::FOLLOW_DISTANCE,
+        },
         Task::WalkPath,
         Task::WaitForMovement,
         Task::FaceTarget,

@@ -2330,3 +2330,49 @@ fn bounded_charger_entries<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Vec<ChargerReservoirEntry>, D::Error> {
     bounded_runtime_vec(d, MAX_SNAPSHOT_CHARGERS)
 }
+
+/// Optional tag 48: ordered authority and historical follow intent only.
+/// Project-authored continuation policy; TODO(black-box).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FollowNavigationSnapshot {
+    /// This payload's version, currently exactly one.
+    pub version: u8,
+    /// Join order, bounded by the published follower limit.
+    pub members: Vec<FollowMemberSnapshot>,
+}
+
+/// One authoritative roster member; no raw runtime handles are encoded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FollowMemberSnapshot {
+    /// Registry spawn-order identity.
+    pub spawn_index: u32,
+    /// None before admission or while another controller owns the actor.
+    pub attempt: Option<FollowAttemptSnapshot>,
+}
+
+/// Historical raw anchor and phase, separate from frozen tag 25.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FollowAttemptSnapshot {
+    /// Accepted player navigation anchor, not a shortened path endpoint.
+    pub accepted_player_anchor: [f32; 3],
+    /// Preparing=0, Moving=1, Arrived=2, Holding=3.
+    pub phase: u8,
+}
+
+impl FollowNavigationSnapshot {
+    /// Wire-only validation; world/AI consistency is checked transactionally on load.
+    #[must_use]
+    pub fn within_limits(&self) -> bool {
+        self.version == 1
+            && self.members.len() <= ohl_ai::follow::MAX_FOLLOWERS
+            && self.members.iter().enumerate().all(|(i, member)| {
+                !self.members[..i]
+                    .iter()
+                    .any(|other| other.spawn_index == member.spawn_index)
+                    && member.attempt.is_none_or(|attempt| {
+                        attempt.accepted_player_anchor.iter().all(|x| x.is_finite())
+                            && ohl_ai::follow::FollowPhase::from_tag(attempt.phase).is_some()
+                    })
+            })
+    }
+}

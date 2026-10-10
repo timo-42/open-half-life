@@ -269,6 +269,24 @@ pub(crate) struct ProjectileSystem {
     deployable_model_table: DeployableModelTable,
 }
 
+/// Current reactive exposure metadata; never persisted or used as a flight prediction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TimedBlastThreat {
+    pub(crate) position: Vec3,
+    pub(crate) radius: f32,
+}
+
+// This is exactly the phase5 world-space map phase7 uses for radius damage.
+// Do not rebuild poses or translate to a phase8 actor/script location here.
+impl ohl_ai::world::DangerExposure for ProjectileSystem {
+    fn bounds_for(&self, entity: Entity) -> Option<(Vec3, Vec3)> {
+        let (min, max) = *self.blast_bounds.get(&entity_id(entity))?;
+        let span = max - min;
+        (min.is_finite() && max.is_finite() && span.is_finite() && span.cmpgt(Vec3::ZERO).all())
+            .then_some((min, max))
+    }
+}
+
 impl ProjectileSystem {
     /// An empty system seeded for its (currently only) source of
     /// randomness: a wandering snark's hop direction.
@@ -296,6 +314,264 @@ impl ProjectileSystem {
         self.projectiles.len()
             + self.deployables.satchels().len()
             + self.deployables.tripmines().len()
+    }
+
+    /// TODO(black-box): project-authored current-position warning, not a blast forecast.
+    /// Phase 8 hears surviving phase-7 grenades; tick-long events do not accumulate.
+    pub(crate) fn emit_grenade_danger(&self, ai: &mut ohl_ai::AiWorld, dt: f32) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        for projectile in self.projectiles.projectiles() {
+            if projectile.kind != ProjectileKind::HandGrenade
+                || !projectile.position.is_finite()
+                || !projectile
+                    .fuse
+                    .is_some_and(|left| left.is_finite() && left > 0.0)
+            {
+                continue;
+            }
+            let payload = self
+                .attacks
+                .get(&projectile.id)
+                .copied()
+                .unwrap_or(AttackPayload::legacy(projectile.kind));
+            let Some(radius) = payload.radius else {
+                continue;
+            };
+            if !payload.damage.is_finite()
+                || payload.damage <= 0.0
+                || !payload.kind.contains(DamageType::BLAST)
+                || !radius.is_finite()
+                || radius <= 0.0
+            {
+                continue;
+            }
+            let warning =
+                ohl_ai::SoundEvent::new(ohl_ai::SoundKind::Danger, projectile.position, radius)
+                    .lasting(dt);
+            if !ai.emit_sound(warning) {
+                break; // Preserve older sounds and the existing capacity/rejection order.
+            }
+        }
+    }
+
+    /// TODO(black-box): reject human throws exposing their live owner or allies
+    /// in one frozen-world calculation. This predicts no future actor/brush motion.
+    /// Scratch IDs/RNG never enter live state; HandGrenade integration uses no RNG.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn human_grenade_safe(
+        &self,
+        level: &Level,
+        request: &crate::ai::ProjectileRequest,
+        hitboxes: &HitboxIndex,
+        relationships: &ohl_ai::RelationshipTable,
+    ) -> bool {
+        // Fixed positive constants; two extra steps cover repeated-f32 subtraction.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        const STEPS: u32 =
+            (ohl_combat::projectile::HAND_GRENADE_FUSE_SECONDS / crate::TICK_SECONDS) as u32 + 2;
+        let Some(collision) = level.collision.as_ref() else {
+            return false;
+        };
+        let Some(radius) = request.blast_radius else {
+            return false;
+        };
+        if request.kind != ProjectileKind::HandGrenade
+            || !request.origin.is_finite()
+            || !request.velocity.is_finite()
+            || !request.damage.is_finite()
+            || request.damage <= 0.0
+            || !request.damage_type.contains(DamageType::BLAST)
+            || !radius.is_finite()
+            || radius <= 0.0
+            || hitboxes.rejected() != 0
+            || !self.movement.gravity.is_finite()
+            || !self.tuning.gravity_scale.value.is_finite()
+            || !self.tuning.restitution.value.is_finite()
+            || !self.tuning.bounce_friction.value.is_finite()
+            || !self.tuning.rest_speed.value.is_finite()
+            || !self.explosion_rule.self_damage_scale.value.is_finite()
+        {
+            return false;
+        }
+        let Ok(owner) = level.registry.world.get::<&ohl_ai::Actor>(request.owner) else {
+            return false;
+        };
+        if !owner.alive || !owner.health.is_finite() || owner.health <= 0.0 {
+            return false;
+        }
+        let mut protected = Vec::new();
+        for (entity, actor) in &mut level.registry.world.query::<(Entity, &ohl_ai::Actor)>() {
+            if actor.alive
+                && (entity == request.owner
+                    || relationships.get(owner.classification, actor.classification)
+                        == ohl_ai::Relationship::Ally)
+            {
+                if !actor.health.is_finite() || !actor.origin.is_finite() {
+                    return false;
+                }
+                if actor.health > 0.0 {
+                    protected.push(entity_id(entity));
+                }
+            }
+        }
+        let Some((current_hitboxes, current_bounds)) = current_safety_geometry(level, hitboxes)
+        else {
+            return false;
+        };
+        let hitboxes = &current_hitboxes;
+        let targets = blast_targets(level, &current_bounds);
+        for id in &protected {
+            let Some(target) = targets.iter().find(|target| target.id == *id) else {
+                return false;
+            };
+            if !target.position.is_finite()
+                || target.hitbox.is_some_and(|(min, max)| {
+                    !min.is_finite() || !max.is_finite() || !min.cmple(max).all()
+                })
+            {
+                return false;
+            }
+        }
+        if hitboxes.entries().iter().any(|entry| {
+            !entry.origin.is_finite()
+                || !entry.rotation.is_finite()
+                || entry
+                    .boxes
+                    .iter()
+                    .any(|b| !b.min.is_finite() || !b.max.is_finite() || !b.min.cmple(b.max).all())
+        }) {
+            return false;
+        }
+        let start = collision.trace(ohl_physics::Hull::Point, request.origin, request.origin);
+        if start.start_solid || start.all_solid {
+            return false;
+        }
+        let mut scratch =
+            ProjectileSet::new(ohl_combat::ProjectileLimits { max_projectiles: 1 }, 0);
+        let Some(id) = scratch.spawn(
+            request.kind,
+            Some(entity_id(request.owner)),
+            request.origin,
+            request.velocity,
+            &self.tuning,
+        ) else {
+            return false;
+        };
+        scratch.get_mut(id).expect("just spawned").target = request.target.map(entity_id);
+        let world = ProjectileWorld {
+            collision,
+            entities: hitboxes,
+            movement: &self.movement,
+            tuning: &self.tuning,
+        };
+        let mut events = Vec::new();
+        for _ in 0..STEPS {
+            events.clear();
+            scratch.tick(crate::TICK_SECONDS, &world, &mut events);
+            for event in &events {
+                if let ProjectileEvent::Detonate {
+                    id: detonated,
+                    kind,
+                    position,
+                    owner,
+                } = *event
+                {
+                    if detonated != id
+                        || kind != request.kind
+                        || owner != Some(entity_id(request.owner))
+                        || !position.is_finite()
+                    {
+                        return false;
+                    }
+                    let point = collision.trace(ohl_physics::Hull::Point, position, position);
+                    if point.start_solid || point.all_solid {
+                        return false;
+                    }
+                    return !radius_damage(
+                        position,
+                        radius,
+                        request.damage,
+                        request.damage_type,
+                        Some(entity_id(request.owner)),
+                        targets.into_iter(),
+                        collision,
+                        &self.explosion_rule,
+                    )
+                    .iter()
+                    .any(|hit| protected.contains(&hit.target) && hit.damage.amount > 0.0);
+                }
+            }
+            let Some(projectile) = scratch.get(id) else {
+                return false;
+            };
+            if !projectile.position.is_finite()
+                || !projectile.velocity.is_finite()
+                || !projectile.fuse.is_some_and(f32::is_finite)
+            {
+                return false;
+            }
+        }
+        false // No complete ordinary detonation within the bounded prediction.
+    }
+
+    /// Earliest live timed BLAST exposing the player's current physical body.
+    /// This reactive guard query predicts neither future flight nor escape.
+    pub(crate) fn timed_blast_threat(
+        &self,
+        collision: &ohl_physics::CollisionModel,
+        origin: Vec3,
+        hull: ohl_physics::Hull,
+        horizon: f32,
+    ) -> Option<TimedBlastThreat> {
+        if !origin.is_finite() || !horizon.is_finite() || horizon < 0.0 {
+            return None;
+        }
+        let (min, max) = hull.bounds();
+        let mut best: Option<(f32, TimedBlastThreat)> = None;
+        // Spawn order breaks equal-fuse ties, including after save restoration.
+        for projectile in self.projectiles.projectiles() {
+            let Some(fuse) = projectile.fuse else {
+                continue;
+            };
+            let profile = self
+                .attacks
+                .get(&projectile.id)
+                .copied()
+                .unwrap_or_else(|| AttackPayload::legacy(projectile.kind));
+            let Some(radius) = profile.radius else {
+                continue;
+            };
+            if !fuse.is_finite()
+                || fuse > horizon
+                || !projectile.position.is_finite()
+                || !profile.kind.contains(DamageType::BLAST)
+                || !profile.damage.is_finite()
+                || profile.damage <= 0.0
+                || !radius.is_finite()
+                || radius <= 0.0
+                || best.is_some_and(|(earlier, _)| fuse >= earlier)
+            {
+                continue;
+            }
+            let point = projectile.position.clamp(origin + min, origin + max);
+            if projectile.position.distance(point) >= radius {
+                continue;
+            }
+            let sight = collision.trace(ohl_physics::Hull::Point, projectile.position, point);
+            if sight.start_solid || sight.all_solid || sight.fraction < 1.0 {
+                continue;
+            }
+            best = Some((
+                fuse,
+                TimedBlastThreat {
+                    position: projectile.position,
+                    radius,
+                },
+            ));
+        }
+        best.map(|(_, threat)| threat)
     }
 
     /// Points `kind`'s model-backed rendering at one of
@@ -564,25 +840,7 @@ impl ProjectileSystem {
 
     /// Copies world bounds from this tick's shared hitbox index, without removing shooters.
     pub(crate) fn update_blast_bounds(&mut self, hitboxes: &HitboxIndex) {
-        self.blast_bounds.clear();
-        for entry in hitboxes.entries() {
-            let mut min = Vec3::splat(f32::INFINITY);
-            let mut max = Vec3::splat(f32::NEG_INFINITY);
-            for volume in &entry.boxes {
-                for x in [volume.min.x, volume.max.x] {
-                    for y in [volume.min.y, volume.max.y] {
-                        for z in [volume.min.z, volume.max.z] {
-                            let corner = entry.origin + entry.rotation * Vec3::new(x, y, z);
-                            min = min.min(corner);
-                            max = max.max(corner);
-                        }
-                    }
-                }
-            }
-            if min.is_finite() && max.is_finite() {
-                self.blast_bounds.insert(entry.id, (min, max));
-            }
-        }
+        self.blast_bounds = hitbox_blast_bounds(hitboxes);
     }
 
     /// Map blasts use the same posed bounds and explosion policy as projectiles.
@@ -1482,22 +1740,69 @@ pub(crate) fn dispatch_blast(
     }));
 }
 
+type BlastBounds = BTreeMap<CombatEntityId, (Vec3, Vec3)>;
+
+// Build once per frozen prediction, before any scratch integration step. The
+// supplied index's limits survive cloning; both old and rebuilt rejection count.
+fn current_safety_geometry(
+    level: &Level,
+    hitboxes: &HitboxIndex,
+) -> Option<(HitboxIndex, BlastBounds)> {
+    if hitboxes.rejected() != 0 {
+        return None;
+    }
+    let mut current = hitboxes.clone();
+    crate::combat::rebuild_current_actor_hitbox_index(&mut current, level);
+    if current.rejected() != 0 {
+        return None;
+    }
+    let bounds = hitbox_blast_bounds(&current);
+    Some((current, bounds))
+}
+
+fn hitbox_blast_bounds(hitboxes: &HitboxIndex) -> BTreeMap<CombatEntityId, (Vec3, Vec3)> {
+    let mut bounds = BTreeMap::new();
+    for entry in hitboxes.entries() {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for volume in &entry.boxes {
+            for x in [volume.min.x, volume.max.x] {
+                for y in [volume.min.y, volume.max.y] {
+                    for z in [volume.min.z, volume.max.z] {
+                        let corner = entry.origin + entry.rotation * Vec3::new(x, y, z);
+                        min = min.min(corner);
+                        max = max.max(corner);
+                    }
+                }
+            }
+        }
+        if min.is_finite() && max.is_finite() {
+            bounds.insert(entry.id, (min, max));
+        }
+    }
+    bounds
+}
+
 /// Every entity a blast may hurt: everything carrying `Health`, positioned
-/// by its `Transform`. `ohl-ai`'s `Actor`-carrying monsters are not a
-/// dependency of this package yet (see `crate::components`'s note); the
-/// player, spawned in `crate::level`, already qualifies.
+/// by its authored transform. Posed world hitboxes take precedence; an actor
+/// without one uses its derived proxy rather than a point at its feet.
 fn blast_targets(
     level: &Level,
     bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
 ) -> Vec<BlastTarget> {
     let mut targets = Vec::new();
-    for (entity, transform, _health) in
-        &mut level
-            .registry
-            .world
-            .query::<(ohl_game::hecs::Entity, &Transform, &ohl_combat::Health)>()
-    {
-        targets.push(BlastTarget::new(entity_id(entity), transform.origin));
+    for (entity, transform, _health, actor) in &mut level.registry.world.query::<(
+        ohl_game::hecs::Entity,
+        &Transform,
+        &ohl_combat::Health,
+        Option<&ohl_ai::Actor>,
+    )>() {
+        let mut target = BlastTarget::new(entity_id(entity), transform.origin);
+        if let Some(actor) = actor {
+            let (min, max) = actor.fallback_damage_bounds();
+            target.hitbox = Some((transform.origin + min, transform.origin + max));
+        }
+        targets.push(target);
     }
     for (id, &(min, max)) in bounds {
         if let Some(target) = targets.iter_mut().find(|target| target.id == *id) {
@@ -1558,6 +1863,46 @@ pub(crate) fn find_model_path(level: &Level, path: &str) -> Option<usize> {
         .studio_model_paths
         .iter()
         .position(|candidate| *candidate == needle)
+}
+
+#[cfg(test)]
+mod origin_frame_tests {
+    use super::*;
+
+    #[test]
+    fn blast_sampling_uses_body_bounds_and_real_posed_bounds_take_precedence() {
+        let text = "{\"classname\" \"worldspawn\"}\n{\"classname\" \"monster_barney\" \"origin\" \"100 20 0\"}";
+        let bytes = crate::test_support::ai_room_bsp(text, false);
+        let mut game = crate::Game::from_map_bytes(
+            &crate::MemoryAssets::new(),
+            crate::test_support::AI_MAP,
+            &bytes,
+        )
+        .expect("fixture");
+        let entity =
+            crate::test_support::entity_of_classname(&game, "monster_barney").expect("actor");
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let samples = blast_targets(level, &BTreeMap::new());
+        let target = samples
+            .iter()
+            .find(|target| target.id == id)
+            .expect("target");
+        assert_eq!(
+            target.hitbox,
+            Some((Vec3::new(84.0, 4.0, 0.0), Vec3::new(116.0, 36.0, 72.0)))
+        );
+        let posed = (Vec3::new(99.0, 18.0, 3.0), Vec3::new(104.0, 25.0, 144.0));
+        let samples = blast_targets(level, &BTreeMap::from([(id, posed)]));
+        assert_eq!(
+            samples
+                .iter()
+                .find(|target| target.id == id)
+                .expect("target")
+                .hitbox,
+            Some(posed)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2218,5 +2563,521 @@ mod resolved_profile_tests {
                 assert!((hits[0].info.amount - 4.0).abs() < f32::EPSILON);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod grenade_danger_tests {
+    use super::*;
+    use ohl_ai::{AiWorld, SoundEvent, SoundKind};
+
+    fn grenade(system: &mut ProjectileSystem, position: Vec3) -> ProjectileId {
+        system
+            .projectiles
+            .spawn(
+                ProjectileKind::HandGrenade,
+                None,
+                position,
+                Vec3::ZERO,
+                &system.tuning,
+            )
+            .expect("generated grenade")
+    }
+
+    #[test]
+    fn timed_grenade_danger_rejects_invalid_or_non_timed_blast_inputs() {
+        let mut system = ProjectileSystem::new(7);
+        let id = grenade(&mut system, Vec3::ZERO);
+        let rng = system.projectiles.next_id_and_rng_state();
+        for dt in [0.0, -0.01, f32::NAN, f32::INFINITY] {
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, dt);
+            assert!(ai.sounds().is_empty());
+        }
+        for fuse in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+        ] {
+            system.projectiles.get_mut(id).unwrap().fuse = fuse;
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+            assert!(ai.sounds().is_empty());
+        }
+        system.projectiles.get_mut(id).unwrap().fuse = Some(5.0);
+        for kind in [
+            ProjectileKind::Rocket,
+            ProjectileKind::Mp5Grenade,
+            ProjectileKind::Snark,
+        ] {
+            system.projectiles.get_mut(id).unwrap().kind = kind;
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+            assert!(
+                ai.sounds().is_empty(),
+                "a fuse alone does not qualify other kinds"
+            );
+        }
+        system.projectiles.get_mut(id).unwrap().kind = ProjectileKind::HandGrenade;
+        system.projectiles.get_mut(id).unwrap().position = Vec3::splat(f32::NAN);
+        let mut ai = AiWorld::new(0);
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert!(ai.sounds().is_empty());
+        system.projectiles.get_mut(id).unwrap().position = Vec3::ZERO;
+        let valid = AttackPayload {
+            damage: 100.0,
+            kind: DamageType::BLAST,
+            radius: Some(200.0),
+        };
+        let invalid = [
+            AttackPayload {
+                kind: DamageType::BULLET,
+                ..valid
+            },
+            AttackPayload {
+                damage: 0.0,
+                ..valid
+            },
+            AttackPayload {
+                damage: -1.0,
+                ..valid
+            },
+            AttackPayload {
+                damage: f32::NAN,
+                ..valid
+            },
+            AttackPayload {
+                damage: f32::INFINITY,
+                ..valid
+            },
+            AttackPayload {
+                radius: None,
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(0.0),
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(-1.0),
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(f32::NAN),
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(f32::INFINITY),
+                ..valid
+            },
+        ];
+        for payload in invalid {
+            system.attacks.insert(id, payload);
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+            assert!(
+                ai.sounds().is_empty(),
+                "invalid stored payload cannot use legacy fallback"
+            );
+        }
+        assert_eq!(system.projectiles.next_id_and_rng_state(), rng);
+    }
+
+    // Exact payload/radius/lifetime values are the transport contract, not approximate geometry.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn timed_grenade_danger_preserves_profile_order_capacity_and_tick_expiry() {
+        let mut system = ProjectileSystem::new(7);
+        let first = grenade(&mut system, Vec3::X * 10.0);
+        let second = grenade(&mut system, Vec3::X * 20.0);
+        system.attacks.insert(
+            first,
+            AttackPayload {
+                damage: 3.0,
+                kind: DamageType::BLAST | DamageType::ACID,
+                radius: Some(777.0),
+            },
+        );
+        // Ownership is deliberately irrelevant; neither None nor a stale full ID is filtered.
+        system.projectiles.get_mut(second).unwrap().owner = Some(CombatEntityId(0x1_0000_0001));
+        let mut ai = AiWorld::new(0);
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        let warnings = ai.sounds().events();
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings[0].position, Vec3::X * 10.0);
+        assert_eq!(warnings[0].radius, 777.0);
+        assert_eq!(warnings[1].position, Vec3::X * 20.0);
+        assert_eq!(
+            warnings[1].radius, 200.0,
+            "missing metadata retains the actual legacy fallback"
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|w| w.kind == SoundKind::Danger && w.lifetime == crate::TICK_SECONDS)
+        );
+        ai.tick(
+            &mut ohl_game::hecs::World::new(),
+            &ohl_ai::SightContext::empty(),
+            crate::TICK_SECONDS,
+        );
+        assert!(
+            ai.sounds().is_empty(),
+            "warnings expire after the ordinary hearing pass"
+        );
+
+        let old = SoundEvent::new(SoundKind::World, -Vec3::X, 10.0).lasting(1.0);
+        for _ in 0..ohl_ai::senses::MAX_SOUNDS - 1 {
+            assert!(ai.emit_sound(old));
+        }
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert_eq!(ai.sounds().len(), ohl_ai::senses::MAX_SOUNDS);
+        assert!(
+            ai.sounds().events()[..ohl_ai::senses::MAX_SOUNDS - 1]
+                .iter()
+                .all(|w| *w == old)
+        );
+        assert_eq!(
+            ai.sounds().events().last().unwrap().position,
+            Vec3::X * 10.0
+        );
+        let full = ai.sounds().events().to_vec();
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert_eq!(ai.sounds().events(), full, "no eviction when already full");
+    }
+
+    #[test]
+    fn timed_grenade_danger_ends_after_actual_phase7_detonation() {
+        let mut level = Level::from_bytes(
+            &crate::MemoryAssets::new(),
+            "ohlsynth",
+            &crate::test_support::synthetic_map_bsp(),
+        )
+        .unwrap();
+        let mut system = ProjectileSystem::new(0);
+        let id = grenade(&mut system, Vec3::new(0.0, 0.0, 100.0));
+        system.projectiles.get_mut(id).unwrap().fuse = Some(crate::TICK_SECONDS * 0.5);
+        let mut ai = AiWorld::new(0);
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert_eq!(
+            ai.sounds().len(),
+            1,
+            "positive remaining fuse warns before phase7"
+        );
+        ai.tick(
+            &mut ohl_game::hecs::World::new(),
+            &ohl_ai::SightContext::empty(),
+            crate::TICK_SECONDS,
+        );
+        system.tick(
+            &mut level,
+            &HitboxIndex::new(ohl_combat::HitboxLimits::default()),
+            crate::TICK_SECONDS,
+            &mut Vec::new(),
+            &mut TransientSprites::default(),
+        );
+        assert!(
+            system.projectiles.get(id).is_none(),
+            "the real fuse removed the grenade"
+        );
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert!(ai.sounds().is_empty(), "no warning survives removal");
+    }
+}
+
+#[cfg(test)]
+mod current_safety_geometry_tests {
+    use super::*;
+    use glam::{EulerRot, Quat};
+    use ohl_ai::{Actor, MonsterAi};
+    use ohl_combat::{HitboxLimits, TraceFilter, TraceMask, trace_attack_filtered};
+
+    fn fixture() -> (crate::Game, Entity) {
+        let text = "{\"classname\" \"worldspawn\"}\n{\"classname\" \"info_player_start\" \"origin\" \"-160 -160 36\"}\n{\"classname\" \"monster_barney\" \"origin\" \"0 0 36\"}";
+        let bytes = crate::test_support::ai_room_bsp(text, false);
+        let (model, _) = ohl_formats::test_support::build_minimal_mdl10_with_hitbox(
+            [10.0, -2.0, 20.0],
+            [30.0, 2.0, 24.0],
+        );
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert("models/barney.mdl", model);
+        let game =
+            crate::Game::from_map_bytes(&assets, crate::test_support::AI_MAP, &bytes).unwrap();
+        let entity = crate::test_support::entity_of_classname(&game, "monster_barney").unwrap();
+        (game, entity)
+    }
+
+    fn assert_current_blast_reaches(
+        level: &Level,
+        id: CombatEntityId,
+        center: Vec3,
+        bounds: &BlastBounds,
+        old: &HitboxIndex,
+    ) {
+        let world = level.collision.as_ref().unwrap();
+        let hits = radius_damage(
+            center,
+            16.0,
+            100.0,
+            DamageType::BLAST,
+            None,
+            blast_targets(level, bounds).into_iter(),
+            world,
+            &ExplosionRule::default(),
+        );
+        assert!(
+            hits.iter()
+                .any(|hit| hit.target == id && hit.damage.amount > 0.0),
+            "current posed bounds must receive the real blast"
+        );
+        let old_hits = radius_damage(
+            center,
+            16.0,
+            100.0,
+            DamageType::BLAST,
+            None,
+            blast_targets(level, &hitbox_blast_bounds(old)).into_iter(),
+            world,
+            &ExplosionRule::default(),
+        );
+        assert!(!old_hits.iter().any(|hit| hit.target == id));
+    }
+
+    fn assert_non_actor_trace(
+        level: &Level,
+        current: &HitboxIndex,
+        prop: Entity,
+        prop_transform: Transform,
+        local_center: Vec3,
+    ) {
+        let world = level.collision.as_ref().unwrap();
+        let prop_center = prop_transform.origin
+            + Quat::from_euler(
+                EulerRot::ZYX,
+                prop_transform.angles.y.to_radians(),
+                prop_transform.angles.x.to_radians(),
+                prop_transform.angles.z.to_radians(),
+            ) * local_center;
+        assert_eq!(
+            trace_attack_filtered(
+                world,
+                current,
+                prop_center - Vec3::Y * 32.0,
+                prop_center + Vec3::Y * 32.0,
+                TraceFilter::new(TraceMask::SHOT)
+            )
+            .entity,
+            Some(entity_id(prop)),
+            "non-Actor studio collision remains"
+        );
+    }
+
+    #[test]
+    fn current_safety_geometry_uses_current_posed_actor_for_trace_and_blast() {
+        let (mut game, entity) = fixture();
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let original = *level.registry.world.get::<&Transform>(entity).unwrap();
+        let mut transform = original;
+        transform.angles = Vec3::new(15.0, -30.0, 20.0);
+        *level.registry.world.get::<&mut Transform>(entity).unwrap() = transform;
+        let anim = *level.registry.world.get::<&StudioAnim>(entity).unwrap();
+        let model = &level.studio_models[anim.model];
+        let pose = anim.sample(model, None).unwrap();
+        let (min, max) = pose.hitbox_bounds(&model.hitboxes[0]).unwrap();
+        assert_ne!(
+            Vec3::from_array(min),
+            Vec3::from_array(model.hitboxes[0].min),
+            "real posed channel is active"
+        );
+        let local_center = (Vec3::from_array(min) + Vec3::from_array(max)) * 0.5;
+        let prop_transform = Transform {
+            origin: Vec3::new(-100.0, 100.0, 64.0),
+            angles: Vec3::new(5.0, 25.0, -10.0),
+        };
+        let prop = level
+            .registry
+            .world
+            .spawn((anim, prop_transform, Health::new(100.0)));
+        let mut old = HitboxIndex::default();
+        crate::combat::rebuild_hitbox_index(&mut old, level);
+        assert_eq!(old.rejected(), 0);
+        let mut actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+        assert!(level.registry.world.get::<&MonsterAi>(entity).is_ok());
+        actor.origin = Vec3::new(100.0, 60.0, 64.0);
+        actor.yaw = 90.0;
+        *level.registry.world.get::<&mut Actor>(entity).unwrap() = actor;
+        let rotation = Quat::from_euler(
+            EulerRot::ZYX,
+            actor.yaw.to_radians(),
+            transform.angles.x.to_radians(),
+            transform.angles.z.to_radians(),
+        );
+        let center = actor.origin + rotation * local_center;
+        let start = center - rotation * Vec3::Y * 12.0;
+        let end = center + rotation * Vec3::Y * 12.0;
+        let world = level.collision.as_ref().unwrap();
+        assert_eq!(
+            world
+                .trace(ohl_physics::Hull::Point, start, end)
+                .fraction
+                .to_bits(),
+            1.0_f32.to_bits()
+        );
+        assert_ne!(
+            trace_attack_filtered(world, &old, start, end, TraceFilter::new(TraceMask::SHOT))
+                .entity,
+            Some(id)
+        );
+        let (current, bounds) = current_safety_geometry(level, &old).unwrap();
+        assert_eq!(
+            trace_attack_filtered(
+                world,
+                &current,
+                start,
+                end,
+                TraceFilter::new(TraceMask::SHOT)
+            )
+            .entity,
+            Some(id),
+            "current posed actor must stop the real trace"
+        );
+        assert_current_blast_reaches(level, id, center, &bounds, &old);
+        let entry = current.entries().iter().find(|e| e.id == id).unwrap();
+        assert!(
+            entry.rotation.abs_diff_eq(rotation, 1e-6),
+            "pitch and roll survive yaw sync"
+        );
+        for previous in old.entries().iter().filter(|e| e.id != id) {
+            assert_eq!(
+                current.entries().iter().find(|e| e.id == previous.id),
+                Some(previous)
+            );
+        }
+        assert_non_actor_trace(level, &current, prop, prop_transform, local_center);
+        assert_eq!(
+            *level.registry.world.get::<&Transform>(entity).unwrap(),
+            transform
+        );
+        let mut unchanged = HitboxIndex::default();
+        crate::combat::rebuild_hitbox_index(&mut unchanged, level);
+        assert_eq!(
+            unchanged.entries(),
+            old.entries(),
+            "ordinary phase-5 builder stays Transform based"
+        );
+    }
+
+    #[test]
+    fn current_safety_geometry_preserves_fallback_precedence_and_index_limits() {
+        let (mut game, entity) = fixture();
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let anim = *level.registry.world.get::<&StudioAnim>(entity).unwrap();
+        let mut actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+        actor.origin = Vec3::new(100.0, 60.0, 64.0);
+        actor.yaw = 90.0;
+        *level.registry.world.get::<&mut Actor>(entity).unwrap() = actor;
+        level.studio_models[anim.model].hitboxes.clear();
+        level.studio_models[anim.model].bounds_min = [-4.0, -2.0, 10.0];
+        level.studio_models[anim.model].bounds_max = [12.0, 2.0, 20.0];
+        let old = HitboxIndex::default();
+        let (header, _) = current_safety_geometry(level, &old).unwrap();
+        let entry = header.entries().iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.origin, actor.origin);
+        assert_eq!(entry.boxes[0].min, Vec3::new(-4.0, -2.0, 10.0));
+        assert!(
+            entry
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_z(actor.yaw.to_radians()), 1e-6)
+        );
+        level.studio_models[anim.model].bounds_max = level.studio_models[anim.model].bounds_min;
+        let (proxy, bounds) = current_safety_geometry(level, &old).unwrap();
+        let entry = proxy.entries().iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.origin, actor.origin);
+        assert_eq!(entry.rotation, Quat::IDENTITY);
+        let (min, max) = actor.fallback_damage_bounds();
+        assert_eq!((entry.boxes[0].min, entry.boxes[0].max), (min, max));
+        assert_eq!(bounds[&id], (actor.origin + min, actor.origin + max));
+        level
+            .registry
+            .world
+            .remove_one::<StudioAnim>(entity)
+            .unwrap();
+        let (model_less, _) = current_safety_geometry(level, &old).unwrap();
+        assert_eq!(
+            model_less.entries().iter().find(|e| e.id == id),
+            Some(entry)
+        );
+        let limited = HitboxIndex::new(HitboxLimits {
+            max_entities: 0,
+            max_boxes_per_entity: 1,
+        });
+        assert_eq!(limited.rejected(), 0);
+        assert!(
+            current_safety_geometry(level, &limited).is_none(),
+            "fresh rejection preserves configured limits"
+        );
+        let mut rejected = HitboxIndex::default();
+        assert!(!rejected.push(ohl_combat::EntityHitboxes::new(id, actor.origin)));
+        assert!(
+            current_safety_geometry(level, &rejected).is_none(),
+            "old rejection is not erased by rebuild"
+        );
+    }
+}
+
+#[cfg(test)]
+mod danger_exposure_tests {
+    use super::ProjectileSystem;
+    use glam::Vec3;
+    use ohl_ai::world::DangerExposure;
+    use ohl_game::hecs::World;
+
+    #[test]
+    fn danger_snapshot_lookup_uses_full_generation_and_refuses_invalid_bounds() {
+        let mut world = World::new();
+        let retired = world.spawn(());
+        let mut projectiles = ProjectileSystem::new(1);
+        let bounds = (Vec3::new(10.0, 20.0, 30.0), Vec3::new(40.0, 50.0, 60.0));
+        assert_eq!(projectiles.bounds_for(retired), None);
+        projectiles
+            .blast_bounds
+            .insert(crate::ids::entity_id(retired), bounds);
+        assert_eq!(
+            projectiles.bounds_for(retired),
+            Some(bounds),
+            "world coordinates are returned without an actor offset"
+        );
+        world.despawn(retired).unwrap();
+        let current = world.spawn(());
+        assert_eq!(
+            current.id(),
+            retired.id(),
+            "the authored control really reuses the slot"
+        );
+        assert_ne!(current.to_bits(), retired.to_bits());
+        assert_eq!(
+            projectiles.bounds_for(current),
+            None,
+            "a retired generation cannot supply the new actor's exposure"
+        );
+        for invalid in [
+            (Vec3::NAN, Vec3::ONE),
+            (Vec3::ONE, Vec3::ZERO),
+            (Vec3::ZERO, Vec3::ZERO),
+            (Vec3::splat(-f32::MAX), Vec3::splat(f32::MAX)),
+        ] {
+            projectiles
+                .blast_bounds
+                .insert(crate::ids::entity_id(current), invalid);
+            assert_eq!(projectiles.bounds_for(current), None);
+        }
+        projectiles
+            .blast_bounds
+            .insert(crate::ids::entity_id(current), bounds);
+        assert_eq!(projectiles.bounds_for(current), Some(bounds));
     }
 }

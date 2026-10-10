@@ -924,13 +924,28 @@ fn player_projectile_command(
 /// trace, in `ohl_combat::ProjectileSet::tick` itself (see
 /// `crate::projectiles`' module doc), not by narrowing this index.
 pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
+    rebuild_hitbox_index_with_actor_snapshot(hitboxes, level, false);
+}
+
+/// Project-authored current-state safety view (TODO(black-box)): mirror the
+/// pending phase-8b Actor transform sync without changing the shared index.
+pub(crate) fn rebuild_current_actor_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
+    rebuild_hitbox_index_with_actor_snapshot(hitboxes, level, true);
+}
+
+fn rebuild_hitbox_index_with_actor_snapshot(
+    hitboxes: &mut HitboxIndex,
+    level: &Level,
+    current_actor_snapshot: bool,
+) {
     hitboxes.clear();
-    for (entity, anim, gait, transform) in
-        &mut level
-            .registry
-            .world
-            .query::<(Entity, &StudioAnim, Option<&StudioGait>, &Transform)>()
-    {
+    for (entity, anim, gait, transform, actor) in &mut level.registry.world.query::<(
+        Entity,
+        &StudioAnim,
+        Option<&StudioGait>,
+        &Transform,
+        Option<&ohl_ai::Actor>,
+    )>() {
         // A taken pickup is not in the world until it respawns, and a dead
         // skirmish bot's corpse no longer stops shots.
         if crate::skirmish::studio_hidden(&level.registry.world, entity)
@@ -944,11 +959,32 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         let pose = anim
             .sample(model, gait)
             .unwrap_or_else(|_| StudioPose::bind(model));
-        let mut entry = EntityHitboxes::from_transform(entity_id(entity), transform);
+        let effective = if current_actor_snapshot {
+            current_actor_transform(level, entity, actor, *transform)
+        } else {
+            *transform
+        };
+        let mut entry = EntityHitboxes::from_transform(entity_id(entity), &effective);
         let added = entry.push_studio_hitboxes(&pose, &model.hitboxes);
         if added == 0 {
-            push_fallback_hitbox(&mut entry, model);
+            push_fallback_hitbox(&mut entry, model, actor);
         }
+        hitboxes.push(entry);
+    }
+    // Asset absence must not make a model-less maker child unshootable.
+    // Real model hitboxes above always take precedence over this proxy.
+    for (entity, actor) in &mut level.registry.world.query::<(Entity, &ohl_ai::Actor)>() {
+        if actor.is_client
+            || hitboxes
+                .entries()
+                .iter()
+                .any(|entry| entry.id == entity_id(entity))
+        {
+            continue;
+        }
+        let (min, max) = actor.fallback_damage_bounds();
+        let mut entry = EntityHitboxes::new(entity_id(entity), actor.origin);
+        entry.push_box(0, min, max, HitGroup::Generic);
         hitboxes.push(entry);
     }
     if !hitboxes
@@ -1011,6 +1047,25 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
     push_damageable_brush_hitboxes(hitboxes, level);
 }
 
+fn current_actor_transform(
+    level: &Level,
+    entity: Entity,
+    actor: Option<&ohl_ai::Actor>,
+    mut transform: Transform,
+) -> Transform {
+    if let Some(actor) = actor
+        && level
+            .registry
+            .world
+            .get::<&ohl_ai::MonsterAi>(entity)
+            .is_ok()
+    {
+        transform.origin = actor.origin;
+        transform.angles.y = actor.yaw;
+    }
+    transform
+}
+
 /// The project-chosen fallback half-extent, in world units, used only when
 /// [`push_fallback_hitbox`] cannot find any usable size in the model's own
 /// data either (see that function's doc comment for when that happens).
@@ -1043,18 +1098,26 @@ const FALLBACK_HITBOX_HALF_EXTENT: f32 = 24.0;
 /// read back from the model's own bytes at runtime (never a hard-coded
 /// per-species size), and when even that is degenerate (non-finite, or
 /// zero or negative on any axis — an empty placeholder model, in
-/// practice) this project's own [`FALLBACK_HITBOX_HALF_EXTENT`] is used
-/// instead, clearly labelled as project-chosen rather than model- or
-/// engine-sourced.
-fn push_fallback_hitbox(entry: &mut EntityHitboxes, model: &StudioModel) {
-    let min = glam::Vec3::from_array(model.bounds_min);
-    let max = glam::Vec3::from_array(model.bounds_max);
-    let (min, max) = if min.is_finite() && max.is_finite() && (max - min).min_element() > 0.0 {
-        (min, max)
-    } else {
-        let half = glam::Vec3::splat(FALLBACK_HITBOX_HALF_EXTENT);
-        (-half, half)
-    };
+/// practice), an actor uses its anchor-relative, axis-aligned collision proxy. Other
+/// props retain [`FALLBACK_HITBOX_HALF_EXTENT`]. Both final fallbacks are
+/// project-authored, not model anatomy or recovered engine behavior.
+fn push_fallback_hitbox(
+    entry: &mut EntityHitboxes,
+    model: &StudioModel,
+    actor: Option<&ohl_ai::Actor>,
+) {
+    let (min, max) =
+        if let Some(bounds) = ohl_ai::body::valid_bounds(model.bounds_min, model.bounds_max) {
+            bounds
+        } else if let Some(actor) = actor {
+            // TODO(black-box): this invented proxy follows the axis-aligned body,
+            // not model anatomy. Its anchor-relative bounds already include D.
+            entry.rotation = glam::Quat::IDENTITY;
+            actor.fallback_damage_bounds()
+        } else {
+            let half = glam::Vec3::splat(FALLBACK_HITBOX_HALF_EXTENT);
+            (-half, half)
+        };
     entry.push_box(0, min, max, HitGroup::Generic);
 }
 

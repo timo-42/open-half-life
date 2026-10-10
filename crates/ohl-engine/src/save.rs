@@ -417,6 +417,12 @@ pub const SECTION_TANKS: u32 = 44;
 /// Missing state retains typed full-spawn defaults; malformed state fails closed.
 pub const SECTION_CHARGER_RESERVOIRS: u32 = 45;
 
+/// Optional ordered follow authority and accepted intent. Tags 46/47 are reserved.
+pub const SECTION_FOLLOW_NAVIGATION: u32 = 48;
+pub use crate::save_state::{
+    FollowAttemptSnapshot, FollowMemberSnapshot, FollowNavigationSnapshot,
+};
+
 pub use crate::debris::DebrisRecord;
 pub use crate::map_effects::{
     EffectEntityRef, MapEffectsSnapshot, PendingUseSnapshot, SavedUseType,
@@ -640,6 +646,8 @@ pub struct GameSave {
     pub tanks: Option<TanksSnapshot>,
     /// Optional tag 45. Full/cold captures are absent; zero reservoirs are explicit.
     pub charger_reservoirs: Option<ChargerReservoirsSnapshot>,
+    /// Optional tag 48. Absence preserves the old empty-roster load behavior.
+    pub follow_navigation: Option<FollowNavigationSnapshot>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -688,6 +696,7 @@ impl GameSave {
             writer.add_section_serde(SECTION_GLOBAL_STATE, &self.globals)?;
             writer.add_section_serde(SECTION_LIGHT_STYLE_TIME, &self.light_style_time)?;
             writer.add_section_serde(SECTION_VIEW, &self.view)?;
+            self.write_follow_navigation(writer)?;
             if let Some(inventory) = &self.inventory {
                 writer.add_section_serde(SECTION_INVENTORY, inventory)?;
             }
@@ -768,6 +777,16 @@ impl GameSave {
             .map_err(|_| crate::EngineError::SaveUnwritable)
     }
 
+    fn write_follow_navigation(&self, writer: &mut ohl_save::SaveWriter) -> ohl_save::Result<()> {
+        if let Some(follow) = &self.follow_navigation {
+            if !follow.within_limits() {
+                return Err(ohl_save::SaveError::LimitExceeded);
+            }
+            writer.add_section_serde(SECTION_FOLLOW_NAVIGATION, follow)?;
+        }
+        Ok(())
+    }
+
     fn write_charger_reservoirs(&self, writer: &mut ohl_save::SaveWriter) -> ohl_save::Result<()> {
         if let Some(chargers) = &self.charger_reservoirs {
             if !chargers.within_limits() {
@@ -822,6 +841,7 @@ impl GameSave {
             map_effects: optional_section(&reader, SECTION_MAP_EFFECTS)?,
             tanks: optional_section(&reader, SECTION_TANKS)?,
             charger_reservoirs,
+            follow_navigation: read_follow_navigation(&reader)?,
             rng: optional_section(&reader, SECTION_RNG)?,
             mover_state: optional_bounded_vec_section(
                 &reader,
@@ -882,6 +902,29 @@ impl GameSave {
             )?,
         })
     }
+}
+
+fn read_follow_navigation(
+    reader: &ohl_save::SaveReader<'_>,
+) -> crate::Result<Option<FollowNavigationSnapshot>> {
+    let bytes = match reader.section(SECTION_FOLLOW_NAVIGATION) {
+        Ok(bytes) => bytes,
+        Err(ohl_save::SaveError::SectionNotFound) => return Ok(None),
+        Err(_) => return Err(crate::EngineError::SaveUnreadable),
+    };
+    // At most two (u32 index, option, three f32s, u8 phase) records.
+    if bytes.len() > 64 {
+        return Err(crate::EngineError::SaveUnreadable);
+    }
+    let (version, rest) =
+        postcard::take_from_bytes::<u8>(bytes).map_err(|_| crate::EngineError::SaveUnreadable)?;
+    let members = bounded_vec::deserialize_bounded_vec(rest, ohl_ai::follow::MAX_FOLLOWERS)
+        .map_err(|_| crate::EngineError::SaveUnreadable)?;
+    let state = FollowNavigationSnapshot { version, members };
+    if !state.within_limits() {
+        return Err(crate::EngineError::SaveUnreadable);
+    }
+    Ok(Some(state))
 }
 
 /// Deserializes one section, mapping every failure onto the crate's single

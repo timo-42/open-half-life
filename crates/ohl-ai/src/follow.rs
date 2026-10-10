@@ -11,14 +11,64 @@
 //! distance, catch-up speed, repath interval, which of the two allies is the
 //! one that leaves).
 //!
-//! Following itself reuses what already exists: a [`Follower`] that is
-//! following raises [`crate::Conditions::SPECIAL2`] and points the
-//! monster's move target at the player, which is exactly what
-//! [`crate::monsters::brains::FOLLOW_PLAYER`] — the schedule Barney and the
-//! scientist already select — consumes. No second movement system, no
-//! second brain.
+//! Following uses the ordinary brain and movement executor. An authorized
+//! [`Follower`] raises [`crate::Conditions::SPECIAL2`] and receives one
+//! current [`FollowInput`]. The selected [`crate::monsters::brains::FOLLOW_PLAYER`]
+//! consumes an accepted raw-anchor intent independently of generic move targets.
+//! Current-intent admission and its retained history are project-authored;
+//! TODO(black-box): original timing and recovery policy remain unmeasured.
 
+use crate::Vec3;
 use hecs::Entity;
+
+/// Current authority, consumed once per AI tick; never saved.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FollowInput {
+    /// Explicit roster absence.
+    Inactive,
+    /// No usable current input: pause, without forgetting an accepted attempt.
+    #[default]
+    Unavailable,
+    /// Current player navigation anchor, before recipient frame conversion.
+    Target(Vec3),
+}
+
+/// Project-authored attempt lifecycle; TODO(black-box): historical fidelity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FollowPhase {
+    /// Ordinary activity/route/speed task setup.
+    Preparing = 0,
+    /// An admitted route, including retained physical failure history.
+    Moving = 1,
+    /// The owned high-level route actually completed.
+    Arrived = 2,
+    /// Current horizontal follow distance is satisfied.
+    Holding = 3,
+}
+
+impl FollowPhase {
+    /// Strict optional-section discriminant; unknown values fail load.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Preparing),
+            1 => Some(Self::Moving),
+            2 => Some(Self::Arrived),
+            3 => Some(Self::Holding),
+            _ => None,
+        }
+    }
+}
+
+/// Historical admitted intent, separate from shortened route endpoints.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FollowAttempt {
+    /// Raw player floor anchor at the last meaningful admission/satisfaction.
+    pub accepted_player_anchor: Vec3,
+    /// Lifecycle of this owned attempt.
+    pub phase: FollowPhase,
+}
 
 /// The published `Pre-Disaster` spawnflag bit of a talk monster: it "thinks
 /// the Black Mesa incident has not happened" and will not follow the player.

@@ -774,13 +774,9 @@ fn run_ticks(game: &mut Game, script: &Script, avoid: &[String]) -> bool {
 /// to see it is [`run_ticks`]'s question, kept separate so each can be
 /// tested for on its own.
 fn drive_to_level_change(game: &mut Game, script: &Script, avoid: &[String]) -> Option<bool> {
+    let mut input_state = crate::script::ScriptInputState::default();
     for step in script.steps() {
-        // See `run_script_ticks`: a `guard` step is expanded here, against
-        // the live game, exactly as the app's own replay expands it.
-        let input = match step {
-            crate::script::ScriptStep::Fixed(input) => *input,
-            crate::script::ScriptStep::Guard => ohl_engine::guard_input(game),
-        };
+        let input = input_state.resolve(game, step);
         let mut reached = None;
         for event in game.tick(CAPTURE_STEP, &input) {
             if matches!(event, GameEvent::LevelChange { .. }) {
@@ -1393,6 +1389,17 @@ mod tests {
         assert!(
             route.text.contains(" guard\n"),
             "the route holds the spot with a weapon out"
+        );
+
+        let guarded = Script::parse(route.text.as_bytes()).expect("the guarded script parses");
+        let mut defended =
+            Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads");
+        defended.give_start_inventory(&loadout);
+        assert!(run_ticks(&mut defended, &guarded, &[]));
+        assert!(defended.player_health() > 0.0);
+        assert!(
+            defended.monster_death_count() > 0,
+            "guarding must remove the hostile that kills the plain-wait control"
         );
 
         let mutated = route.text.replace(" guard\n", " wait\n");
@@ -2019,5 +2026,202 @@ mod tests {
         // chain walk's own visited list records them.
         assert!(!super::reaches_new_map(&back, &avoid));
         assert!(super::reaches_new_map(&back, &[]));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod guard_entry_view_fixture {
+    use super::{CAPTURE_STEP, PlanAction, Script, script_text, shortest_turn};
+    use glam::Vec3;
+    use ohl_engine::test_support::{
+        PLAN_SCRIPTED_MONSTER_MODEL, SCRIPT_MAP, ai_room_bsp, entity_block,
+        plan_scripted_monster_model_bytes, script_room_entities,
+    };
+    use ohl_engine::{Game, Input, MemoryAssets};
+
+    pub(crate) fn fixture(yaw: f32, pitch: f32) -> (MemoryAssets, Game) {
+        fixture_with_exit(yaw, pitch, "")
+    }
+
+    pub(crate) fn fixture_with_exit(yaw: f32, pitch: f32, extra: &str) -> (MemoryAssets, Game) {
+        let mut assets = MemoryAssets::new();
+        let hostile = entity_block(
+            "monster_houndeye",
+            [0.0, 160.0, 0.0],
+            90.0,
+            &[("model", PLAN_SCRIPTED_MONSTER_MODEL)],
+        );
+        assets.insert(
+            &format!("maps/{SCRIPT_MAP}.bsp"),
+            ai_room_bsp(
+                &script_room_entities([0.0, 0.0, 40.0], &format!("{hostile}{extra}")),
+                false,
+            ),
+        );
+        assets.insert(
+            PLAN_SCRIPTED_MONSTER_MODEL,
+            plan_scripted_monster_model_bytes(),
+        );
+        let mut game = Game::load(&assets, SCRIPT_MAP).expect("authored room loads");
+        game.give_start_inventory(&ohl_engine::parse_start_inventory("weapon_9mmAR").unwrap());
+        // The ordinary grant supplies reserve ammo, not a loaded clip. Draw
+        // and reload through real input while the hostile faces away, also
+        // settling onto the floor and populating the posed index.
+        game.tick(
+            CAPTURE_STEP,
+            &Input {
+                select_slot: Some(3),
+                ..Input::default()
+            },
+        );
+        for _ in 0..180 {
+            game.tick(
+                CAPTURE_STEP,
+                &Input {
+                    reload: true,
+                    ..Input::default()
+                },
+            );
+        }
+        // Ordinary mouse input keeps this a walking, weapon-capable player.
+        game.tick(
+            CAPTURE_STEP,
+            &Input {
+                mouse_delta: (
+                    -yaw / ohl_engine::MOUSE_SENSITIVITY,
+                    pitch / ohl_engine::MOUSE_SENSITIVITY,
+                ),
+                ..Input::default()
+            },
+        );
+        assert!(game.player_health() > 0.0);
+        let center = Vec3::from_array(game.player_origin());
+        let trace = game
+            .collision()
+            .unwrap()
+            .trace(ohl_physics::Hull::Standing, center, center);
+        assert!(!trace.start_solid && !trace.all_solid);
+        let targets = game.hostile_monster_eyes();
+        assert_eq!(targets.len(), 1, "one living ordinary hostile");
+        let (entity, eye) = targets[0];
+        assert_eq!(
+            game.shot_would_reach(eye),
+            Some(entity),
+            "authored target eye must intersect its posed body: {eye:?}"
+        );
+        let (_, decision) = ohl_engine::guard_step(&game);
+        assert!(
+            decision.has_target && decision.weapon.is_some() && !decision.retreating,
+            "loaded standing Guard prerequisite: {decision:?}"
+        );
+        (assets, game)
+    }
+
+    fn run_checked(
+        run: &impl Fn(&mut Game, &MemoryAssets, &Script),
+        game: &mut Game,
+        assets: &MemoryAssets,
+        text: &str,
+    ) {
+        let script = Script::parse(text.as_bytes()).expect("authored script parses");
+        let before = game.elapsed();
+        run(game, assets, &script);
+        #[allow(clippy::cast_precision_loss)]
+        let expected = script.len() as f32 * CAPTURE_STEP;
+        assert!((game.elapsed() - before - expected).abs() < ohl_engine::TICK_SECONDS);
+        assert!(game.player_health() > 0.0);
+    }
+
+    pub(crate) fn exported_route(run: impl Fn(&mut Game, &MemoryAssets, &Script)) {
+        let (assets, mut control) = fixture(0.0, 0.0);
+        let start = Vec3::from_array(control.player_origin());
+        run_checked(&run, &mut control, &assets, "20 guard\n70 guard\n");
+        assert!(control.weapon_fired_count() > 0, "Guard actually fired");
+        assert!(shortest_turn(0.0, control.camera().yaw).abs() > 30.0);
+        let guard_end = Vec3::from_array(control.player_origin());
+        assert!(
+            (guard_end - start).length() < 0.1,
+            "Guard held this clear spot"
+        );
+
+        let (assets, mut game) = fixture(0.0, 0.0);
+        let text = script_text(
+            0.0,
+            &[
+                PlanAction::Guard { seconds: 1.5 },
+                PlanAction::Move {
+                    yaw: 45.0,
+                    distance: 64.0,
+                    jump: false,
+                    fall: 0.0,
+                },
+            ],
+            game.move_config(),
+        );
+        run_checked(&run, &mut game, &assets, &text);
+        assert!(
+            game.weapon_fired_count() > 0,
+            "the exported Guard actually fired"
+        );
+        assert!(
+            shortest_turn(game.camera().yaw, 45.0).abs() < 0.01,
+            "post-Guard heading resumes the exporter's entry view plus its relative turn"
+        );
+        let delta = Vec3::from_array(game.player_origin()) - guard_end;
+        let along = (delta.x + delta.y) / 2.0_f32.sqrt();
+        let across = (delta.x - delta.y) / 2.0_f32.sqrt();
+        assert!(
+            along > 20.0 && along < 180.0,
+            "actual forward progress follows the exported heading"
+        );
+        assert!(across.abs() < 0.1, "Guard adds no lateral heading offset");
+    }
+
+    pub(crate) fn boundaries(run: impl Fn(&mut Game, &MemoryAssets, &Script)) {
+        let (assets, mut game) = fixture(350.0, 80.0);
+        let start = Vec3::from_array(game.player_origin());
+        run_checked(
+            &run,
+            &mut game,
+            &assets,
+            "20 guard\n70 guard\n1 look 20 30 forward\n",
+        );
+        assert!(game.weapon_fired_count() > 0);
+        assert!(shortest_turn(game.camera().yaw, 20.0).abs() < 0.01);
+        assert!((game.camera().pitch - ohl_physics::MAX_PITCH_DEGREES).abs() < 0.01);
+        let delta = Vec3::from_array(game.player_origin()) - start;
+        let heading = Vec3::new(
+            20.0_f32.to_radians().cos(),
+            20.0_f32.to_radians().sin(),
+            0.0,
+        );
+        assert!(
+            delta.dot(heading) > 0.01,
+            "the very first Fixed tick moves in its composed view"
+        );
+        assert!(delta.cross(heading).z.abs() < 0.01);
+        // A later invocation and a Fixed-only sequence preserve ordinary input.
+        run_checked(&run, &mut game, &assets, "1 look -10 15\n1 look -5 10\n");
+        assert!(shortest_turn(game.camera().yaw, 45.0).abs() < 0.01);
+        assert!((game.camera().pitch - (ohl_physics::MAX_PITCH_DEGREES - 15.0)).abs() < 0.01);
+
+        let (assets, mut fixed) = fixture(350.0, 80.0);
+        run_checked(&run, &mut fixed, &assets, "1 look 20 30 forward\n");
+        assert!(shortest_turn(fixed.camera().yaw, 20.0).abs() < 0.01);
+        assert!((fixed.camera().pitch - ohl_physics::MAX_PITCH_DEGREES).abs() < 0.01);
+    }
+
+    #[test]
+    fn guard_entry_view_planner_exported_route() {
+        exported_route(|game, _, script| {
+            assert_eq!(super::drive_to_level_change(game, script, &[]), None);
+        });
+    }
+
+    #[test]
+    fn guard_entry_view_planner_same_tick_and_boundaries() {
+        boundaries(|game, _, script| {
+            assert_eq!(super::drive_to_level_change(game, script, &[]), None);
+        });
     }
 }

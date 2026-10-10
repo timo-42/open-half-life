@@ -882,16 +882,9 @@ fn run_script_ticks(
         ended_section: false,
         ticks: 0,
     };
+    let mut input_state = crate::script::ScriptInputState::default();
     for step in script.steps() {
-        // A `guard` step has no input of its own: what a defending player
-        // presses depends on where the monsters are *this* tick, so it is
-        // computed here, against the live game, rather than parsed out of
-        // the file (see `crate::script`'s `guard` token and
-        // `ohl_engine::guard_input`).
-        let input = match step {
-            crate::script::ScriptStep::Fixed(input) => *input,
-            crate::script::ScriptStep::Guard => ohl_engine::guard_input(game),
-        };
+        let input = input_state.resolve(game, step);
         audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &input);
         let routed = route_headless_events(
@@ -910,6 +903,9 @@ fn run_script_ticks(
                 player_died_line: "The player died.",
             },
         );
+        if routed.followed_level_change {
+            input_state.followed_level_change();
+        }
         outcome.followed_level_change |= routed.followed_level_change;
         outcome.ended_section |= routed.ended_section;
         audio.frame(CAPTURE_STEP);
@@ -4584,5 +4580,129 @@ mod menu_window_tests {
         assert_eq!(age_text(7_200), "2 h ago");
         assert_eq!(age_text(90_000), "yesterday");
         assert_eq!(age_text(3 * 86_400), "3 days ago");
+    }
+}
+
+#[cfg(test)]
+mod guard_entry_view_tests {
+    use super::*;
+    use crate::route_planner::guard_entry_view_fixture;
+    use crate::script::Script;
+    use ohl_engine::MemoryAssets;
+
+    fn run(game: &mut Game, assets: &MemoryAssets, script: &Script) {
+        let mut audio = AudioRuntime::silent();
+        let mut log = crate::script_log::ScriptLog::new(game);
+        let outcome = run_script_ticks(
+            game,
+            assets,
+            &mut audio,
+            script,
+            &mut log,
+            &TickOptions {
+                script_log: false,
+                follow_level_change: false,
+                stop_on_level_change: false,
+            },
+        );
+        assert_eq!(outcome.ticks, u64::try_from(script.len()).unwrap());
+        assert!(!outcome.followed_level_change && !outcome.ended_section);
+    }
+
+    #[test]
+    fn guard_entry_view_headless_exported_route() {
+        guard_entry_view_fixture::exported_route(run);
+    }
+
+    #[test]
+    fn guard_entry_view_headless_same_tick_and_boundaries() {
+        guard_entry_view_fixture::boundaries(run);
+    }
+    #[test]
+    fn guard_entry_view_followed_map_starts_a_new_interval() {
+        use ohl_engine::test_support::{
+            PLAN_SCRIPTED_MONSTER_MODEL, ai_room_bsp, entity_block, script_room_entities,
+        };
+        const NEXT: &str = "ohlguardviewnext";
+        let extra = format!(
+            "{}{}",
+            entity_block(
+                "trigger_auto",
+                [0.0; 3],
+                0.0,
+                &[("target", "exit"), ("delay", "3.5")]
+            ),
+            entity_block(
+                "trigger_changelevel",
+                [220.0, 220.0, 40.0],
+                0.0,
+                &[("targetname", "exit"), ("map", NEXT)]
+            )
+        );
+        let build = || {
+            let (mut assets, game) = guard_entry_view_fixture::fixture_with_exit(0.0, 0.0, &extra);
+            let enemy = entity_block(
+                "monster_houndeye",
+                [160.0, 0.0, 0.0],
+                0.0,
+                &[("model", PLAN_SCRIPTED_MONSTER_MODEL)],
+            );
+            let entities = script_room_entities([0.0, 0.0, 40.0], &enemy).replacen(
+                "\"angle\" \"0\"",
+                "\"angle\" \"135\"",
+                1,
+            );
+            assets.insert(&format!("maps/{NEXT}.bsp"), ai_room_bsp(&entities, false));
+            (assets, game)
+        };
+        let drive = |game: &mut Game, assets: &MemoryAssets, text: &str, stop| {
+            let mut audio = AudioRuntime::silent();
+            let mut log = crate::script_log::ScriptLog::new(game);
+            run_script_ticks(
+                game,
+                assets,
+                &mut audio,
+                &Script::parse(text.as_bytes()).unwrap(),
+                &mut log,
+                &TickOptions {
+                    script_log: false,
+                    follow_level_change: true,
+                    stop_on_level_change: stop,
+                },
+            )
+        };
+        let (assets, mut arrival) = build();
+        let outcome = drive(&mut arrival, &assets, "90 guard\n", true);
+        assert!(outcome.followed_level_change && outcome.ticks < 90);
+        assert_eq!(arrival.map(), NEXT);
+        assert!(
+            (arrival.camera().yaw - 135.0).abs() < 0.01,
+            "actual destination spawn differs from old entry"
+        );
+
+        let (assets, mut game) = build();
+        let outcome = drive(
+            &mut game,
+            &assets,
+            "90 guard\n1 look 0 30\n1 look 0 15\n",
+            false,
+        );
+        assert!(outcome.followed_level_change && !outcome.ended_section);
+        assert_eq!(outcome.ticks, 92);
+        assert_eq!(game.map(), NEXT);
+        assert!(
+            game.player_health() > 0.0 && game.weapon_fired_count() > 0,
+            "new-map Guard actually shoots after the real transition"
+        );
+        assert!(
+            (game.camera().yaw - 180.0).abs() < 0.01,
+            "new Guard captures destination entry once even while accumulated followed remains true"
+        );
+        let outcome = drive(&mut game, &assets, "1 look 0 15\n", false);
+        assert_eq!(outcome.ticks, 1);
+        assert!(
+            (game.camera().yaw - 195.0).abs() < 0.01,
+            "next invocation has no old interval"
+        );
     }
 }

@@ -9580,6 +9580,10 @@ the audio page says so.
 
 ## M9.59 — Monsters stand on their floor
 
+Historical release entry retained verbatim below. The M9.NEXT single-anchor
+reconciliation supersedes its HullLift API and weakened smoke/guard fixtures;
+its external reported outcomes are not acceptance evidence for that candidate.
+
 Reported from a real play-through: on `c1a0` the lobby's guard and
 scientists were drawn standing in the air. A local measurement over the
 imported map found four of them placed 17 units above the floor and one 24,
@@ -9661,3 +9665,269 @@ saving and resuming halfway through a scripted walk. All three reproduced
 the bug before the fix. The five relevant integration suites pass (71
 tests), including existing script completion, teleport, interruption,
 following, prisoner and mover checks.
+
+## M9.NEXT — Monster anchors, query adapters and bounded grenade admission
+
+Candidate implementation; numbering and acceptance remain pending. Actor and
+Transform retain one authored model anchor. Derived BodyFrame translates that
+anchor once at centered movement, navigation, door and mover queries, then
+converts returned positions back. Custom model hull metadata, point flight,
+ceiling and fixed/rooted policies remain explicit. Model-local eyes rotate with
+yaw; posed hitboxes and valid clipping bounds keep the unmodified model
+transform. Only missing/degenerate damage geometry uses a body-relative proxy.
+Maker children and restored models reconstruct the same derived metadata.
+
+Bounded spawn/maker floor placement and held-script movement/turn/save behavior
+from M9.59/M9.60 are retained without a second HullLift position authority.
+Custom nonpositive offsets remain eligible for placement. Missing collision,
+solid starts, absent floor or invalid results retain placement. Restored tag-18
+anchors and tag-28 script return marks win without another floor drop. Tag-25
+route, cover, memory and destination values remain absolute query/world points
+at runtime and on wire; no save-boundary offset or float rewriting is added.
+Known fresh anchor producers project for the receiving actor, while literal
+sound and unknown-damage points retain their existing meaning. No save section,
+field, dependency or tag is added; tag 46 remains free.
+
+Two bounded routing dependencies pulled from P5 are included: initial ground
+attachment may descend to a nearby supported lower waypoint within the retained
+drop allowance, and an eligible walker may make a supported flat approach to an
+appended terminal goal when normal steering makes no horizontal progress.
+These are project-authored local policies. General step/stuck repair, final-sweep
+routing and air-node routing remain P5; neither policy promises general gravity
+or collision-safe script traversal.
+
+Navigation consumes stored query goals and preserves bounded traced arrival,
+cache invalidation and hidden last-known pursuit. Autonomous fallback remains
+traced. The legacy ScriptHold straight-line wall-ignoring fallback is retained
+as a compatibility cut until P5; this package does not promise collision-safe
+script routing. Player enemy-memory indexing and follower-roster persistence
+remain separate omissions. Unmarked unpublished anchor-valued P2 saves are
+outside automatic compatibility; shipped query-valued tag-25 saves retain
+unchanged positional encoding.
+
+The shared attack trace ignores only an exact departing entity-boundary contact;
+interior, inward and parallel contacts and other world/entity candidates remain
+authoritative. Grunt/assassin grenade readiness uses the actual projectile
+collision world. In addition to existing readiness checks, a bounded nominal
+approach sweep follows the existing launch velocity, fixed-step gravity and point
+collision policy, rejecting invalid or world-obstructed approaches. Admission
+does not predict entity interception, future world movement, later bounces,
+target motion or splash/self/ally safety, and is not an arbitrary delayed-emission
+recheck. Launch profiles, damage, fuse, ownership, RNG and saved state remain
+unchanged. The reactive timed-BLAST guard uses current projectile exposure and
+bounded movement-input clearance, preserves active unarmed combat retreat
+priority, and offers no trajectory-planning or guaranteed-escape policy.
+
+These coordinate, fallback, floor, eye/proxy, guard and grenade-admission choices
+are project-authored. TODO(black-box): original floor-settling timing, exceptional
+model placement, per-species eye/muzzle fidelity, literal target intent, warning
+horizon and grenade approach/safety policy. Existing public provenance remains
+in FORMAT_SOURCES; synthetic controls are not retail-parity observations.
+Original combat death guards and the grenade guard fixture remain mandatory.
+
+**Gates:** Focused policy controls pass, as do both-species low/high-ceiling
+controls and the existing grunt grenade player-damage control. Bypassing only
+lob admission fails the intended low-ceiling assertion for the first species;
+the byte-restored normal controls pass. Seven debug gates and genuine release
+app/tool builds remain pending for the final overlaid candidate. Original combat 37/37
+with zero unexpected lines, campaign 93/93, both chains depth 12 / Pass / 660.8
+simulated seconds, and fresh counts-only census: [pending]. Last e117 candidate
+reported debug workspace 3260/0/37 and release builds passing, but combat 35/37
+with two unexpected lines, campaign 93/93 and both chains depth 6 / Pass / 372.3
+seconds; these remain open regressions, not acceptance or expected-change credit.
+No accepted cause or repair is claimed. New PR, milestone assignment and merge
+remain pending; P5/new P8 hops and final publication remain held.
+
+The held P2 M9.NEXT scope also includes maker-child follower initialization:
+supported talk children receive the same derived component as declared talk
+actors, through one initializer. TODO(black-box): the child's default eligibility
+is project-authored; maker flags do not become monster flags, and directly
+declared Pre-Disaster actors retain their refusal. Existing Talk-monster
+provenance is recorded in FORMAT_SOURCES.
+
+Save/load reconstructs eligibility without changing any tag or wire format.
+Active follower membership/order is not serialized today, for declared actors
+or maker children; the roster reset and potentially retained AI follow schedule
+remain an explicit existing limitation, not a new persistence guarantee.
+**Gates:** all three generated controls pass, including post-load eligibility;
+the child-only omission compiles and fails the real recruitment assertion, and
+exact restoration passes. The unchanged scientist use/stop control passes.
+Final formatting and engine all-target Clippy pass; the final source includes
+a separate, semantic-neutral three-line test-helper borrow correction after
+the behavior runs. Full gates, releases and unchanged original runtime targets
+remain pending; no private cause or chain-recovery credit follows from this
+independent source fix.
+
+The held P2 M9.NEXT Guard correction is project-authored: prefer a complete
+straight escape outside the selected timed blast's current radius before the
+unchanged greedy local fallback. The same eight actual post-turn controller
+wishes use the actual hull for a whole corridor sweep and sampled support at
+the current walkable-slope limit. Support is bounded to 16 intervals, at most
+48-unit spacing and 64-unit downward depth. The shortest admitted clear corridor
+wins, with deterministic input-order ties. Existing combat-retreat priority and
+all aim/fire/reload/selection input remain unchanged. Only transient current
+position/radius transport changes; no save, schema, physics or damage change.
+
+TODO(black-box): parity remains unsettled. Sampled support can miss narrow gaps;
+this current-geometry choice supplies no deadline, projectile-trajectory,
+multiple-threat or general-navigation guarantee. Momentum, changing geometry
+and late warnings remain limitations. Generated authored success gives no private
+cause, strict-baseline recovery or broader route-adoption credit.
+
+**Gates:** all five unchanged authored Guard integration tests, nine Guard unit
+tests and formatting pass. The sole complete-preference omission compiles and
+fails the original survival assertion (0 passed / 1 failed / 4 filtered); exact
+restoration passes (1 passed / 0 failed / 4 filtered). Full seven gates, release
+builds, original combat 37/37 with zero unexpected, campaign 93/93, BOTH depth
+12 / Pass / 660.8 seconds and fresh census remain pending. Chain commands must
+explicitly request `--min-depth 12`; default-threshold Pass is insufficient.
+
+The held P2 M9.NEXT scope also qualifies human grenade selection against the
+existing frozen-world owner/Ally veto. After unchanged geometric readiness,
+only the pending secondary-choice bit is removed for a currently refused human
+throw, allowing ordinary combat selection to choose another legal attack.
+The selection preview and emission share exact ordinary request construction;
+the independent emission recheck, launch cooldown and no-cooldown refusal remain.
+No fixture, damage, physics, schedule, saved state or Guard policy changes.
+
+TODO(black-box): this is project-authored selection policy, with up to 502 extra
+scratch steps per geometrically-ready human per tick. Movement or retargeting
+after qualification can invalidate its result; it is not a future safety promise.
+**Gates:** the unchanged three-test monsterclip suite passes. Removing only the
+qualification call compiles and restores the original unfenced-death assertion
+failure; exact source restoration passes. The three existing grenade safety
+controls, two human readiness controls, real grunt player-damage control and five
+original Guard tests pass. Formatting and engine all-target Clippy pass. Full
+workspace gates, release builds, unchanged original runtime targets and fresh
+census remain pending for this successor; no private cause or recovery is claimed.
+
+The P2 geometry follow-up preserves the existing documented centered
+Generic membership at the shared configure/restore seam: that membership selects
+the centered body frame, while valid model eyes, clipping-eye fallback and posed
+or clipping damage geometry retain their priority. Ordinary custom Generic models
+and walkers keep their existing policy. The centered-model public provenance
+already recorded in FORMAT_SOURCES remains the reference; no new source citation
+or model-identity inference is introduced.
+
+The second correction uses the exact finite old-to-current rotated point
+plus translation only to classify preexisting mover overlap. The existing tangent
+push destination, blocked response, crush damage and cadence stay unchanged.
+No save state, tag, API, navigation, Guard, follower or broad physics change is
+introduced. TODO(black-box): centered fallback and preexisting-overlap exclusion
+are project-authored policies; original parity and private runtime relevance
+remain unsettled. Neither source finding proves the combat or chain cause.
+
+**Gates:** both unchanged-production generated reproducers compile and fail
+their intended primary assertions. Normal01 passes the centered selector (1/0/11),
+three rotating controls (3/0/384), full transform suite (12), blocked-mover suite
+(18), original Guard suite (5), emission safety (3), readiness (2), real grunt (1)
+and anchor-floor control (1). Omitting only the centered override compiles and
+fails the first named case (0/1/11); exact restoration passes (1/0/11). Omitting
+only the exact rotating-overlap comparison compiles and fails the first rotation-
+only case (0/1/386); exact restoration passes (1/0/386). Later named variants,
+save reconstruction and nonzero translation have normal coverage only, not
+separate mutation credit. These results retain their normal01 source binding.
+
+The initial function-length Clippy failure and subsequent new-test float-comparison
+failure remain recorded failures. The final equivalent lookup reuse and exact
+finite-value bit assertion change supply no new behavior or mutation credit.
+Normal03 rotating controls pass (3/0/384), formatting passes and engine all-target
+Clippy passes. Final-source seven gates, release pair, original runtime targets
+and fresh census: [pending].
+The preceding 6e9d source has all seven gates passing (3298 passed / 0 failed /
+37 ignored) and a qualified release pair, but original runtime remains negative:
+combat 36/37 with one unexpected, campaign 93/93, BOTH depth 6 / 372.3 seconds,
+failing the strict depth requirement. Those are historical results for that
+source, not follow-up acceptance. Original combat 37/37 with zero unexpected,
+campaign 93/93 and BOTH depth 12 / Pass / 660.8 seconds remain mandatory; chain
+commands must explicitly request `--min-depth 12`. Earlier Guard mutation results
+retain their earlier source binding. Fresh census, PR, milestone assignment,
+merge and publication remain pending; no recovery is forecast.
+
+The held P2 human-grenade safety check now builds scratch geometry from the
+current Actor state at each frozen qualification/emission evaluation. Collision
+and protected blast bounds use the same scratch index, rather than mixing later
+Actor positions with the earlier phase-5 blast cache. Studio bodies synchronized
+from MonsterAi Actors use current raw origin and yaw, preserving Transform pitch
+and roll and the existing animation/gait pose. Posed boxes, valid model clipping
+fallback and the identity-oriented last-resort Actor proxy keep their precedence;
+non-Actors and other collision participants remain in the shared builder passes.
+No extra body-frame translation or fallback rotation is introduced.
+
+The supplied index's configured limits survive rebuilding. Existing rejection,
+new scratch rejection, missing protected targets and invalid geometry still
+refuse admission. The same index supplies world blast bounds. Ordinary phase-5
+geometry/cache, phase order, projectile physics, ordinary request construction,
+owner/directional-Ally policy, refusal and cooldown behavior stay unchanged.
+This is transient scratch consistency, with no saved state or tag change.
+TODO(black-box): the frozen-current policy is project-authored; subsequent Actor,
+brush or animation motion is not predicted. No survival, original parity, private
+producer/victim/cause or strict-baseline recovery is established.
+
+**Gates:** the generated unchanged-production baseline compiles and fails the
+moved-Ally refusal assertion. On normal01, omitting only the current safety view
+compiles and fails that same assertion; omitting only the studio Actor override
+fails the actual posed trace assertion. Exact normal restorations pass. These
+focused discriminators retain their normal01 source binding; later helper/type/
+test extraction supplies no new behavior or mutation credit. Final normal04 focused checks pass: safety 4/0/386 and geometry 2/0/388,
+formatting and engine all-target Clippy zero. Later outward/blast arms have normal
+coverage only; the mutation credit remains limited to normal01 moved-Ally refusal
+and the first actual studio trace. Equivalent helper/type/test extraction supplies
+no new behavior or mutation credit. Earlier mistaken-normal execution and style
+failures remain historical, not mutation kills or retroactive passes. Full seven
+gates, release pair, original FOUR and fresh census: [pending].
+Historical 4f6 full seven gates passed (3301/0/37), while its original FOUR stayed
+negative: combat 36/37 with one unexpected, campaign 93/93 and BOTH depth 6 /
+372.3 seconds, failing strict depth. Those results are not transferred to this
+successor. Original combat 37/37 zero unexpected, campaign 93/93 and BOTH depth
+12 / Pass / 660.8 seconds remain mandatory, with explicit `--min-depth 12`.
+Final source-marker coverage, PR, milestone assignment and merge remain pending.
+The closed first-fatal category records BLAST in the first accepted fatal-batch
+union only; it establishes no victim, producer or cause. Independent unimplemented
+explicit-viewpoint backlog is excluded from this repair and original chain cause.
+
+The combined held P2 candidate now includes an independent explicit-viewpoint
+contract correction. `Game::set_viewpoint` accepts a world eye position, matching
+the repository app's `CapturePose` contract, and derives the controller center
+by subtracting its current configured eye offset. Standing and held-crouch
+controls use ordinary `Game::tick` and preserve eye position without movement.
+This is project-authored tooling API consistency, not a retail-engine claim.
+TODO(black-box): original behavior remains unsettled; the original chained caller
+bypasses this setter, so this correction establishes no chain cause or recovery.
+No save encoding, tag, damage, navigation or ordinary input policy changes.
+
+**Gates:** on `a82f5b6`, the generated baseline and sole eye-offset-subtraction
+omission compile and fail the first standing eye assertion; normal and exact
+restoration each pass (1 passed / 0 failed). Held-crouch coverage is normal/
+restored only, not separately mutation-certified. Formatting and scoped test
+Clippy pass. The preceding `baf7204` full seven gates passed (3304/0/37) and its
+release pair passed, but its observed original FOUR remained negative: combat
+36/37 with one unexpected, campaign 93/93, BOTH depth 6 / 372.3 seconds failing
+strict depth. Those results retain their earlier source association; no pass
+transfers to this candidate. Current full workspace gates, release pair, combat,
+campaign, both chains and fresh census: [pending]. Original combat 37/37 zero
+unexpected, campaign 93/93 and BOTH depth 12 / Pass / 660.8 seconds remain
+mandatory, with explicit `--min-depth 12`. M9.61 is unassigned; existing tags and
+separate pending tag reservations remain unchanged. PR/merge/publication pending.
+
+The held P2 viewpoint successor includes a test-only landmark fixture correction:
+its authored controller center is now converted to a supplied eye using the current
+eye offset, and independent pre-transition center and clear-hull prerequisites
+are explicit. The original landmark-offset and camera/arrival assertions remain
+unchanged. Production transition and embedded-arrival recovery are unchanged.
+This restores the project-authored geometry premise of the fixture; it introduces
+no retail behavior claim, new citation, save encoding or tag. The original chained
+caller bypasses the viewpoint setter; no private cause or chain recovery follows.
+
+**Gates:** b42 gates 1–4 passed, but its partial workspace run failed the landmark
+fixture (1314 passed / 1 failed / 7 ignored); policy/graph were unstarted. That
+failure remains recorded. On the fixture correction, all nine game-loop tests
+pass on the preformat source. The initial layout check failed; a formatting-only
+successor then passes formatting and scoped game-loop Clippy. The behavior suite
+was not rerun after layout-only correction; no new behavior or mutation credit is
+claimed. Commit `84618aa` contains only that test correction. New final-source
+full seven gates, releases, original FOUR and fresh census: [pending]. Original
+combat 37/37 zero unexpected, campaign 93/93 and BOTH depth 12 / Pass / 660.8
+seconds remain required, with explicit `--min-depth 12`. Earlier runtime negatives
+retain their earlier source binding. M9.61 and tag 48 remain unassigned; tags 46/47
+remain exclusively reserved. PR/merge/publication remain pending.
