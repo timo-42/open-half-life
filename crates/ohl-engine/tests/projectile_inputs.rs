@@ -151,7 +151,7 @@ fn grenade_room() -> (Game, MemoryAssets) {
          {{\"classname\" \"info_player_start\" \"origin\" \"-40 0 36\" \"angle\" \"0\"}}\n{}",
         entity_block(
             "monster_gargantua",
-            [32.0, 0.0, 36.0],
+            [32.0, 0.0, ohl_physics::DIST_EPSILON],
             180.0,
             &[("spawnflags", "16")]
         )
@@ -231,6 +231,11 @@ fn grenade_exposure_point(game: &Game) -> ohl_ai::Vec3 {
         assert!(
             !floor.start_solid && floor.fraction < 1.0,
             "floor supported"
+        );
+        assert!(
+            !floor.all_solid
+                && floor.plane_normal.z >= ohl_physics::MoveConfig::default().slope_limit,
+            "actual full hull has walkable floor support"
         );
     }
     let model = StudioModel::parse(
