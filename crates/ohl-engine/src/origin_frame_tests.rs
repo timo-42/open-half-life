@@ -121,15 +121,16 @@ fn posed_and_clipping_boxes_share_the_render_anchor_while_only_degenerate_boxes_
 
 #[test]
 fn map_maker_and_restored_children_reconstruct_the_same_model_policy() {
+    // This model-policy fixture starts supported; general spawn falling is deferred.
     let direct = entity_block(
         "monster_barney",
-        [128.0, 64.0, 48.0],
+        [128.0, 64.0, ohl_physics::DIST_EPSILON],
         90.0,
         &[("spawnflags", "16")],
     );
     let maker = entity_block(
         "monstermaker",
-        [-128.0, 64.0, 48.0],
+        [-128.0, 64.0, ohl_physics::DIST_EPSILON],
         90.0,
         &[
             ("monstertype", "monster_barney"),
@@ -174,6 +175,19 @@ fn map_maker_and_restored_children_reconstruct_the_same_model_policy() {
                     assert_eq!(actor.origin, transform.origin);
                     assert_eq!(actor.body_frame, BodyFrame::Feet);
                     assert_eq!(actor.view_ofs, Vec3::new(5.0, 1.0, 50.0));
+                    let collision = game.monster_collision().expect("authored flat floor");
+                    let query = actor.query_origin();
+                    let occupancy = collision.trace(actor.hull, query, query);
+                    assert!(
+                        !occupancy.start_solid && !occupancy.all_solid,
+                        "the grounded fixture hull is clear"
+                    );
+                    let support = collision.trace(actor.hull, query, query - Vec3::Z);
+                    assert!(!support.start_solid && !support.all_solid && support.fraction < 1.0);
+                    assert!(
+                        support.plane_normal.z > 0.9,
+                        "the authored floor supports it"
+                    );
                     (
                         owner.is_some(),
                         actor.origin,
