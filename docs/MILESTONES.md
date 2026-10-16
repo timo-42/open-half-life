@@ -9712,3 +9712,12 @@ reference query test passed. `cargo fmt --all --check`, strict workspace
 Clippy, staged policy and the 37-crate dependency graph checks passed.
 `cargo-deny` 0.20.2 passed advisories, bans, licenses and sources, with the
 existing duplicate-dependency and license-not-encountered warnings.
+
+A later bounded official-HLTV run against that loopback reference exited 0
+with three status headings and a connection indicator; runtime diagnostics
+remain private. Its application relay recorded 1,616 entries across two
+boundaries, not distinct wire packets. REA inspected a UDP-field window;
+envelopes/timestamps were synthesized. [The protocol ledger](GOLDSRC_PROTOCOL.md)
+records the evidence ID and limits. This partial spectator-proxy reference
+does not establish decoded sign-on, ordinary-player input/authentication,
+prediction, or gameplay interoperability.

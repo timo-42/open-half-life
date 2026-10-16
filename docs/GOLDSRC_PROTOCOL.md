@@ -19,8 +19,9 @@ installers from it must not be executed.
 - **Documented** means the linked public source describes the fact. It does
   not establish applicability to every Half-Life build.
 - **Observed** requires a repeatable black-box experiment against an
-  identified, lawfully acquired runtime. No gameplay or sequenced-channel
-  observation is recorded in this ledger yet.
+  identified, lawfully acquired runtime. No normal-player gameplay comparison
+  or decoded-channel compatibility result is recorded. Opaque official HLTV
+  proxy traffic is recorded below.
 - **Project choice** describes a proposed design, budget, or test constraint.
 - **Unresolved** means the evidence is insufficient to implement or claim
   compatibility.
@@ -78,6 +79,54 @@ REA retained an optional-plugin warning in its private diagnostics; the
 UDP-field inspection completed successfully. Payloads, endpoint fields and
 raw diagnostics remain local. This evidence supports the bounded query
 experiment only, not the unresolved gameplay channel.
+
+## Bounded HLTV proxy observation
+
+Valve's [2003 HLTV manual][P13], §§4 and 7, documents that HLDS supplies the
+proxy's required files, its server connection and bind options, and the
+`sv_proxies 1` admission setting. Its spectator role cannot supply ordinary
+player input verification. The author's [admin FAQ][P14] documents Linux
+`hltv` and the same server admission gate.
+
+On 2026-10-16 the coordinator ran the official proxy against the separate
+protocol-48 app-90 HLDS on loopback, with `sv_proxies 1`. A bounded repeat
+scheduled status every five seconds and quit at nineteen seconds, within a
+twenty-second outer deadline. The proxy can be started directly with these
+documented controls and project-selected ports:
+
+```sh
+: "${HL_REFERENCE_DIR:?Set the private official reference directory}"
+cd "$HL_REFERENCE_DIR"
+timeout 20s ./hltv -ip 127.0.0.1 -port 27032 -nodns \
+  +nomaster 1 +maxclients 0 +autoretry 0 \
+  +connect 127.0.0.1:27031 +loopcmd 1 5 status +loopcmd 2 19 quit
+```
+
+For the recorded observation, the coordinator routed the connection through
+a private application UDP relay; its configuration remains local.
+The process exited 0 and emitted three status headings and a connection
+indicator. Two missing-configuration-category diagnostic lines and one
+unclassified diagnostic were retained privately; this was not a fully clean
+runtime result. An application UDP relay recorded 1,616 entries across its
+**two boundaries**, containing 59,148 combined payload bytes. These are not
+1,616 distinct wire packets. Of those entries, 1,606 lacked the documented
+connectionless header prefixes; their channel semantics were not decoded.
+
+REA 6.5.0 `inspect-packet-capture` with TShark 4.6.9 produced evidence
+`ev_820483dc0f57a6afdbad432d5169119be5b16e9cfb5553f26b87c66b78a0c868`.
+With only UDP port/length fields selected and a packet limit of 2,048, it
+reported 1,616 matching records, returned an eight-record window, and set
+`has_more` to true. Envelopes and timestamps were synthesized by the relay
+recorder: this was not hardware acquisition and does not establish original
+IP headers, NIC timing, or complete-payload semantics. Raw recordings,
+logs, and runtime diagnostics remain ignored/private; all owned reference processes
+were stopped after the experiment.
+
+This provides a partial spectator-proxy reference, not decoded sign-on or
+normal-client interoperability. Original gameplay channel implementation
+remains open. Normal-player input, authentication, and prediction still
+require a runnable original player client and separate validation. The
+prohibition on executing binaries from the supplied ISO remains in force.
 
 ## Documented connectionless query formats
 
@@ -187,8 +236,8 @@ These are executable software for an external local reference only, never
 source or dependencies for the Rust engine.
 
 The commands below are a **project experiment recipe** for a separate
-reference. Query startup has been observed as recorded above; a successful
-gameplay join is still pending. Select fresh private directories outside
+reference. Query and opaque proxy observations are recorded above; a normal
+player gameplay join is still pending. Select fresh private directories outside
 tracked files, either outside the checkout or under an ignored private cache.
 The map name is runtime input from an independently public
 source or an independently authored test map; do not derive a checked-in
@@ -263,3 +312,5 @@ requested original wire protocol with an unlabelled custom protocol.
 [P10]: https://steamcommunity.com/sharedfiles/filedetails/?id=2028698488
 [P11]: https://slackdocs.slackware.nl/howtos%3Agames%3Ahalflife_dedicated_server
 [P12]: https://developer.valvesoftware.com/wiki/CHILLMODEA/Pages/Command_line_options_%28GoldSrc_Dedicated_Server%29
+[P13]: https://www.slipgate.de/download/HLTV-Readme.txt
+[P14]: https://www.slipgate.de/hltv/hltv_FAQ_admins.html

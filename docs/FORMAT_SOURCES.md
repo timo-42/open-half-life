@@ -8906,6 +8906,12 @@ or deathmatch compatibility.
   reference distribution, genuine authentication boundary, and documented
   launch settings. App-specific setup sources and version examples are
   linked individually in the protocol ledger.
+- [Valve LLC: HLTV Documentation (2003), §§4 and 7](https://www.slipgate.de/download/HLTV-Readme.txt)
+  and the author's [HLTV Admin FAQ](https://www.slipgate.de/hltv/hltv_FAQ_admins.html):
+  primary public prose for the dedicated-server-supplied spectator proxy,
+  server admission and documented launch controls. The bounded opaque proxy
+  observation in the protocol ledger establishes no ordinary-player or
+  decoded-channel compatibility; no HLTV implementation source was used.
 
 All implementation must remain independently authored under `CLEAN_ROOM.md`.
 Netchan framing/reliability, channel fragments, byte munging, complete deltas,
