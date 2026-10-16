@@ -49,8 +49,9 @@ gameplay into the Source engine's gameplay protocol.
 The user's correction selects the release family immediately before Steam,
 not the separately downloaded app-90 Steam server. Valve's mirrored
 [1.1.1.0 client readme][P15] is dated June 12, 2002; it is a candidate client
-reference, not a completed runtime comparison. The exact Linux server release,
-build and observed protocol still need verification. Valve's
+reference, not a completed gameplay comparison. The Linux server package and
+query observations are identified below; its exact native build remains
+unconfirmed. Valve's
 [Steam release announcement][P16] dates the public client release to
 September 12, 2003. Do not equate the selected WON target with a later Steam
 build by changing a protocol constant.
@@ -58,9 +59,9 @@ build by changing a protocol constant.
 All protocol-48 observations below remain historical evidence for their stated
 Steam server/proxy distributions. They do not verify the selected pre-Steam
 target. A separately acquired public full-client update is being inspected
-through static archive extraction and component-provenance checks. No new
-pre-Steam reference pass or player execution is recorded. The ISO execution
-prohibition remains unchanged.
+through static extraction, component-provenance checks and bounded launcher
+startup. The pre-Steam server queries below establish no player sign-on or
+gameplay result. The ISO execution prohibition remains unchanged.
 
 ## Required client/server pairings
 
@@ -80,6 +81,54 @@ validated input/no-op round trip on both cross-pairings. Query success,
 proxy attachment or a reserved player slot does not meet it. Movement,
 combat, scoring, pickups, respawn, chat, prediction and map transitions then
 need their own comparisons across all pairings.
+
+## Pre-Steam reference observation (2026-10-17)
+
+The public Linux [base][P17] and [d-update][P18] packages' bundled readmes
+label them 3.1.1.1 (May 1, 2003) and 3.1.1.1d (July 30, 2003).
+The executed launcher's digest matched its staged d-update origin. Native
+output reported version 3.1.1.1 and protocol 46, without a displayed `d`
+suffix or confirmed build. Whole-source SHA-256 provenance:
+
+| Source | SHA-256 |
+| --- | --- |
+| Linux base package | `d852368e606736033be85992459e343e994775ab36463aced44b04a7672484ea` |
+| Linux d-update package | `5536a28dae2424ab142d0586dbb533a688cb21a844f79757855f299ccc4dd1f7` |
+| Public full-client update | `35baa2058bf41f872b418e1545d3a8bb92f13f7db211d734e522863b95651604` |
+| Query 001 recording | `14af134e701648220352a2d3e46dbedcb3b0678145cfd6b0d055f378d0e2ec57` |
+| Query 002 recording | `17865c9143f28442b209dee802ba0b1edf10e43258b78e0e3d9cb94a21abe89d` |
+| Query 003 recording | `78b70edff7e0f2000b85e98c1e0d95c8ef67e7fcc4426524febc5613de3bff80` |
+
+These package hashes do not cover every dynamic runtime dependency. Mirror
+MD5 agreement is integrity evidence, not publisher cryptographic authentication.
+
+Query 001 sent three exact unterminated `details` requests. Each 60-byte reply
+reported protocol 46, zero players and capacity four. Published fields consumed
+59 bytes, followed by one observed zero byte with unassigned meaning;
+`PublishedAscii` correctly rejected the trailing data. Query 002 independently
+sent one unterminated `details`, `players` and `rules` request each. Details
+had the same boundary; empty Players consumed six bytes and the 48-rule reply
+all 767 bytes under the selected LE/NUL/UTF-8 parser. Query 003 used the new
+production `ObservedLinux3111d` profile and passed all three query families.
+This is post-implementation conformance, not held-out structural discovery.
+Populated player scores/times, arbitrary text encodings and other field
+combinations remain unverified.
+
+All three bounded server runs exited 0. Each recording has 12 records across
+two relay boundaries, with all six paired payloads identical. REA 6.5.0 and
+TShark 4.6.9 inspected only `udp.length` for Query 001: packet limit 128,
+match limit 12; evidence
+`ev_4c576e089c991e1aa44548580345525f690844d440b9adfb91651ebc03a804aa`
+returned all 12 matches, with no more results. This is field extraction, not
+message decoding. Synthesized IPv4/UDP envelopes and call-level timestamps
+establish neither distinct NIC packets nor original wire timing. Raw payloads
+and native text remain private.
+
+The public-update-only client stage's executable/config origins matched
+verified extracted entries plus project-authored configuration. Six observed
+launcher/support module records matched staged origins. Bounded startup
+survived until cleanup, but established no engine load, client UDP,
+authentication or sign-on. No ISO code or scripts were executed.
 
 ## Bounded query observation
 
@@ -346,6 +395,24 @@ unchanged. These are codec checks, not a new original-runtime or
 playable-client result. The existing CLI/browser still uses the earlier A2S
 query client; no host/join gameplay CLI was added.
 
+### Observed pre-Steam query profile
+
+`legacy::Profile::ObservedLinux3111d` explicitly selects the dated reference
+cohort above, not every protocol-46 implementation. Its
+`Response::ObservedDetails` carries
+`ObservedDetails { published: Details, opaque_extension: u8 }`, with a
+protocol-46 safety guard and exactly one extension byte. The byte is preserved
+without bot semantics or a synthesized default; nonzero values and other
+field combinations remain structural candidates. `PublishedAscii` is
+unchanged, and mismatched profile/response shapes are rejected without
+fallback. Existing budgets, atomic output and redacted diagnostics remain.
+Players/Rules reuse the published candidate layouts, with only the bounded
+empty-player/rule cohort observed above. Seven new synthetic tests bring the
+focused locked crate result to 105 passed and one ignored. Final locked
+workspace tests passed 3,334 tests with 38 ignored across 256 summaries;
+workspace formatting, strict locked workspace/all-target Clippy and cargo-deny
+passed, with no lockfile change. This adds no gameplay transport or playable CLI.
+
 ## Documented join outline
 
 Luigi Auriemma's [2002 firsthand protocol description][P3], concerning
@@ -436,7 +503,8 @@ Such substitution would not verify original Half-Life compatibility.
 This recipe documents the already observed protocol-48 research reference.
 It does not obtain the user's selected pre-Steam runtime. A public pre-Steam
 client update and Linux server distribution are being checked separately;
-no player join or replacement reference pass has completed.
+the pre-Steam query observations above are separate from this recipe, and no
+ordinary-player sign-on has completed.
 
 Valve's [dedicated-server distribution documentation][P8] describes anonymous
 SteamCMD server downloads without a signed-in Steam client. The [SteamCMD
@@ -532,3 +600,5 @@ protocol.
 [P14]: https://www.slipgate.de/hltv/hltv_FAQ_admins.html
 [P15]: https://www.filefactory.org/tfc/file/776
 [P16]: https://store.steampowered.com/oldnews/183
+[P17]: https://archive.org/download/hlds_l_3111_full_202503/hlds_l_3111_full.bin
+[P18]: https://archive.org/download/goldsrc_hlds_won_linux/hlds_l_3111d_update.tar.gz

@@ -9825,3 +9825,33 @@ validated input/no-op round trip on both cross-pairings. Admission, complete
 channel behavior, resource consistency, replication and prediction still
 need implementation and original-reference validation. Queries and a loaded
 local scene do not meet that milestone.
+
+### Observed pre-Steam query profile
+
+Subsequent bounded runs used the public Linux 3.1.1.1 base plus d update.
+The executed launcher matched its d-update origin; native output reported
+version 3.1.1.1/protocol 46 without a displayed `d` suffix or confirmed build.
+The strict published Details codec correctly rejected an extra byte in
+three initial replies. A second run independently confirmed all three
+unterminated query requests: Details retained that one opaque zero byte,
+empty Players consumed six bytes and Rules contained 48 fully consumed
+entries. A third run passed all three using the new production profile;
+it is post-implementation conformance, not a held-out discovery.
+[The protocol ledger](GOLDSRC_PROTOCOL.md) records whole-package/capture
+hashes, paired-relay integrity and REA field-inspection limits.
+
+`Profile::ObservedLinux3111d` selects that dated cohort explicitly, with
+`ObservedDetails { published, opaque_extension }`, a protocol-46 guard and
+exactly one extension byte. It assigns no bot meaning, invents no default
+and leaves `PublishedAscii` unchanged. Independent review found no blocking
+issue. Seven new synthetic tests bring focused locked `ohl-net` validation
+to 105 passed and one ignored. Final locked workspace tests passed 3,334
+tests with 38 ignored across 256 summaries. Workspace formatting, strict
+locked workspace/all-target Clippy and cargo-deny passed; the lockfile is
+unchanged. Prior workspace totals above belong to the earlier unit.
+
+Patch-only client executable/config origins were verified, and bounded
+launcher startup observed matching support-module origins. No engine load,
+client UDP, authentication or player sign-on is established. The next
+ordinary-player active/spawned baseline and both original/Rust cross-pairings
+remain open; historical protocol-48 observations are not substituted for them.

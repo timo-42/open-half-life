@@ -21,6 +21,26 @@
 //! byte-valued indicators are preserved. Finite negative durations and signed
 //! modification values are also preserved, without host-policy interpretation.
 //!
+//! [`Profile::ObservedLinux3111d`] separately selects the 2026-10-17 public
+//! Linux HLDS 3.1.1.1 base plus d-update reference cohort; actual runtime build
+//! confirmation remains pending. Its independently reviewed observation found
+//! three exact unterminated ASCII `details` requests and three 60-byte `m`
+//! replies: the published fields consumed 59 bytes and one zero byte remained.
+//! The replies reported protocol 46, zero players and capacity four. Evidence
+//! is the complete-capture SHA-256
+//! `14af134e701648220352a2d3e46dbedcb3b0678145cfd6b0d055f378d0e2ec57`;
+//! no captured contents or names are fixtures. This does not establish behavior
+//! for all protocol-46 implementations or a gameplay connection.
+//!
+//! This explicit profile requires protocol 46 as a project safety guard and
+//! exactly one opaque byte after the published details. The byte has no assigned
+//! meaning and is never synthesized. Other extension values and other published
+//! field combinations, including mod metadata, are structural candidates rather
+//! than observed cases. Players and rules retain only the documented candidate
+//! codecs under either profile; that observation did not probe those queries.
+//! Primitive selections remain provisional. [`Profile::PublishedAscii`] still
+//! rejects the extra byte; neither profile falls back to the other.
+//!
 //! Project bounds are 1400-byte requests, 64 KiB complete logical responses,
 //! 4096 UTF-8 bytes per response string, 255 players and 1024 rules. All lengths,
 //! counts and text are checked before allocating or publishing their result.
@@ -48,6 +68,10 @@ pub enum Profile {
     /// Published ASCII commands and field order with the selected primitives
     /// described in the module documentation; no final pre-Steam claim.
     PublishedAscii,
+    /// Public Linux HLDS 3.1.1.1 base plus d-update cohort observed 2026-10-17,
+    /// with actual build confirmation pending. See the module's bounded
+    /// evidence and candidate-layout limitations; this is not all protocol 46.
+    ObservedLinux3111d,
 }
 
 /// Published ASCII requests, without a NUL, newline or appended challenge.
@@ -93,6 +117,22 @@ impl fmt::Debug for Details {
     }
 }
 
+/// Published details plus the reference cohort's one opaque trailing byte.
+///
+/// Only a zero extension was observed. Other byte values are preserved as
+/// structural candidates without assigning semantics or claiming observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ObservedDetails {
+    pub published: Details,
+    pub opaque_extension: u8,
+}
+
+impl fmt::Debug for ObservedDetails {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ObservedDetails { .. }")
+    }
+}
+
 /// Conditional mod fields, preserving the published unused **string**.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Modification {
@@ -115,6 +155,7 @@ impl fmt::Debug for Modification {
 #[derive(Clone, PartialEq)]
 pub enum Response {
     Details(Box<Details>),
+    ObservedDetails(Box<ObservedDetails>),
     Players(Vec<PlayerInfo>),
     Rules(Vec<ServerRule>),
 }
@@ -123,6 +164,7 @@ impl fmt::Debug for Response {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Details(_) => f.write_str("Response::Details { .. }"),
+            Self::ObservedDetails(_) => f.write_str("Response::ObservedDetails { .. }"),
             Self::Players(entries) => f
                 .debug_struct("Response::Players")
                 .field("count", &entries.len())
@@ -153,6 +195,8 @@ pub enum Error {
     RuleLimit,
     NonFiniteDuration,
     OutputTooSmall,
+    ProfileMismatch,
+    ObservedProtocolGuard,
 }
 
 impl fmt::Display for Error {
@@ -173,6 +217,12 @@ impl fmt::Display for Error {
             Self::RuleLimit => "historical query rule count limit exceeded",
             Self::NonFiniteDuration => "historical query player duration is not finite",
             Self::OutputTooSmall => "historical query output buffer is too small",
+            Self::ProfileMismatch => {
+                "historical query response shape does not fit selected profile"
+            }
+            Self::ObservedProtocolGuard => {
+                "historical query protocol does not fit observed-profile guard"
+            }
         })
     }
 }
@@ -208,7 +258,7 @@ impl fmt::Debug for EncodedMessage<'_> {
 /// Parse exactly one documented ASCII request; suffixes are never guessed.
 pub fn decode_request(profile: Profile, packet: &[u8]) -> Result<Request, Error> {
     match profile {
-        Profile::PublishedAscii => {
+        Profile::PublishedAscii | Profile::ObservedLinux3111d => {
             if packet.len() > MAX_DATAGRAM_BYTES {
                 return Err(Error::DatagramLimit);
             }
@@ -238,7 +288,7 @@ pub fn encode_request(
     output: &mut [u8],
 ) -> Result<EncodedMessage<'_>, Error> {
     match profile {
-        Profile::PublishedAscii => {
+        Profile::PublishedAscii | Profile::ObservedLinux3111d => {
             let text = request.text();
             let length = SINGLE_HEADER.len() + text.len();
             let written = output.get_mut(..length).ok_or(Error::OutputTooSmall)?;
@@ -252,14 +302,14 @@ pub fn encode_request(
 /// Parse one complete logical response; split and later A2S layouts are absent.
 pub fn decode_response(profile: Profile, packet: &[u8]) -> Result<Response, Error> {
     match profile {
-        Profile::PublishedAscii => {
+        Profile::PublishedAscii | Profile::ObservedLinux3111d => {
             if packet.len() > MAX_RESPONSE_BYTES {
                 return Err(Error::ResponseLimit);
             }
             let mut reader = Reader::new(packet);
             reader.header()?;
             let response = match reader.byte()? {
-                b'm' => Response::Details(Box::new(read_details(&mut reader)?)),
+                b'm' => read_profile_details(profile, &mut reader)?,
                 b'D' => Response::Players(read_players(&mut reader)?),
                 b'E' => Response::Rules(read_rules(&mut reader)?),
                 _ => return Err(Error::UnsupportedResponse),
@@ -279,11 +329,24 @@ pub fn encode_response<'output>(
     output: &'output mut [u8],
 ) -> Result<EncodedMessage<'output>, Error> {
     match profile {
-        Profile::PublishedAscii => {
+        Profile::PublishedAscii | Profile::ObservedLinux3111d => {
             let mut writer = Writer { bytes: Vec::new() };
             writer.bytes(&SINGLE_HEADER)?;
             match response {
-                Response::Details(details) => write_details(&mut writer, details)?,
+                Response::Details(details) => {
+                    if profile != Profile::PublishedAscii {
+                        return Err(Error::ProfileMismatch);
+                    }
+                    write_details(&mut writer, details)?;
+                }
+                Response::ObservedDetails(details) => {
+                    if profile != Profile::ObservedLinux3111d {
+                        return Err(Error::ProfileMismatch);
+                    }
+                    observed_protocol_guard(&details.published)?;
+                    write_details(&mut writer, &details.published)?;
+                    writer.byte(details.opaque_extension)?;
+                }
                 Response::Players(players) => {
                     let count = u8::try_from(players.len()).map_err(|_| Error::PlayerLimit)?;
                     writer.bytes(&[b'D', count])?;
@@ -316,6 +379,29 @@ pub fn encode_response<'output>(
             written.copy_from_slice(&writer.bytes);
             Ok(EncodedMessage(written))
         }
+    }
+}
+
+fn read_profile_details(profile: Profile, reader: &mut Reader<'_>) -> Result<Response, Error> {
+    let published = read_details(reader)?;
+    match profile {
+        Profile::PublishedAscii => Ok(Response::Details(Box::new(published))),
+        Profile::ObservedLinux3111d => {
+            observed_protocol_guard(&published)?;
+            let opaque_extension = reader.byte()?;
+            Ok(Response::ObservedDetails(Box::new(ObservedDetails {
+                published,
+                opaque_extension,
+            })))
+        }
+    }
+}
+
+fn observed_protocol_guard(details: &Details) -> Result<(), Error> {
+    if details.protocol == 46 {
+        Ok(())
+    } else {
+        Err(Error::ObservedProtocolGuard)
     }
 }
 

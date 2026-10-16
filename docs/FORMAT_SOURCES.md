@@ -8932,6 +8932,24 @@ establish complete network or deathmatch compatibility.
   identify a candidate public-update reference; it does not establish an
   observed player connection, protocol number or exact final Linux server
   release. Static extraction is not execution or an interoperability pass.
+- Bundled Linux readmes in the public [3.1.1.1 base mirror](https://archive.org/download/hlds_l_3111_full_202503/hlds_l_3111_full.bin)
+  and [d-update mirror](https://archive.org/download/goldsrc_hlds_won_linux/hlds_l_3111d_update.tar.gz)
+  label their releases May 1 and July 30, 2003. The independently reviewed
+  dated loopback reference reported protocol 46/version 3.1.1.1, using a
+  digest-matched d-origin launcher. Whole-package/capture digests and relay
+  limits are in the protocol ledger. Mirror MD5 agreement is integrity
+  evidence, not a publisher signature. No displayed `d` suffix or exact
+  native build is inferred.
+
+`legacy::Profile::ObservedLinux3111d` is grounded in those bounded runtime
+observations: the published Details fields plus one opaque trailing byte,
+observed zero. It preserves the byte without assigning bot semantics;
+`PublishedAscii` remains strict. Empty Players and a 48-rule reply were also
+observed; a subsequent production-profile run passed all three query families
+as post-implementation conformance, without populated player-time verification.
+Original payloads, names and rule strings are not fixtures. Patch-only launcher
+startup is separate evidence and establishes no engine load, authentication
+or sign-on.
 
 All implementation must remain independently authored under `CLEAN_ROOM.md`.
 Netchan framing/reliability, channel fragments, complete transform coverage,

@@ -6,8 +6,8 @@
 use ohl_net::{
     MAX_DATAGRAM_BYTES, MAX_RESPONSE_BYTES, MAX_RULES, MAX_STRING_BYTES, PlayerInfo, ServerRule,
     legacy::{
-        Details, Error, Modification, Profile, Request, Response, decode_request, decode_response,
-        encode_request, encode_response,
+        Details, Error, Modification, ObservedDetails, Profile, Request, Response, decode_request,
+        decode_response, encode_request, encode_response,
     },
 };
 
@@ -17,6 +17,9 @@ const MOD_DETAILS: &[u8] = b"\xff\xff\xff\xffmX\0A\0B\0C\0D\0\x02\x08\x2adl\x01\
 const PLAYERS: &[u8] =
     b"\xff\xff\xff\xffD\x02\x07A\0\xfe\xff\xff\xff\0\0\xc0\x3f\x07\0\0\0\0\0\0\0\x80\xbf";
 const RULES: &[u8] = b"\xff\xff\xff\xffE\x02\0k\0v\0k\0\0";
+// Authored structural candidate: arbitrary existing fixture fields, guarded
+// protocol byte, and a deliberately nonzero extension; not the captured reply.
+const OBSERVED_DETAILS: &[u8] = b"\xff\xff\xff\xffmX\0A\0B\0C\0D\0\x02\x08\x2edl\x01\0\x01\xa7";
 
 fn details() -> Details {
     Details {
@@ -588,4 +591,251 @@ fn bounded_arbitrary_short_messages_never_panic_or_produce_invalid_results() {
             }
         }
     }
+}
+
+fn observed_details(extension: u8) -> ObservedDetails {
+    ObservedDetails {
+        published: Details {
+            protocol: 46,
+            ..details()
+        },
+        opaque_extension: extension,
+    }
+}
+
+fn assert_observed_rejected(response: &Response, expected: Error) {
+    let mut output = vec![0xa5; MAX_RESPONSE_BYTES + 8];
+    assert_eq!(
+        encode_response(Profile::ObservedLinux3111d, response, &mut output),
+        Err(expected)
+    );
+    assert!(output.iter().all(|byte| *byte == 0xa5));
+}
+
+#[test]
+fn observed_profile_matches_manual_structural_candidate_and_preserves_opaque_byte() {
+    for extension in [0, 1, 0xa7, 255] {
+        let response = Response::ObservedDetails(Box::new(observed_details(extension)));
+        let mut manual = OBSERVED_DETAILS.to_vec();
+        *manual.last_mut().unwrap() = extension;
+        assert_eq!(
+            decode_response(Profile::ObservedLinux3111d, &manual),
+            Ok(response.clone())
+        );
+        let mut output = vec![0xa5; manual.len() + 8];
+        let encoded = encode_response(Profile::ObservedLinux3111d, &response, &mut output).unwrap();
+        assert_eq!(encoded.as_bytes(), manual);
+        assert_eq!(&output[manual.len()..], &[0xa5; 8]);
+        let Response::ObservedDetails(parsed) =
+            decode_response(Profile::ObservedLinux3111d, &manual).unwrap()
+        else {
+            panic!("wrong synthetic response type")
+        };
+        assert_eq!(parsed.opaque_extension, extension);
+        assert_eq!(parsed.published.protocol, 46);
+        assert_eq!(decode_response(PROFILE, &manual), Err(Error::TrailingData));
+    }
+}
+
+#[test]
+fn observed_profile_requires_exactly_one_extension_without_fallback() {
+    for end in 0..OBSERVED_DETAILS.len() {
+        assert_eq!(
+            decode_response(Profile::ObservedLinux3111d, &OBSERVED_DETAILS[..end]),
+            Err(Error::Truncated)
+        );
+    }
+    let base = &OBSERVED_DETAILS[..OBSERVED_DETAILS.len() - 1];
+    assert_eq!(
+        decode_response(PROFILE, base),
+        Ok(Response::Details(Box::new(observed_details(0).published)))
+    );
+    for extra in [1, 4] {
+        let mut extended = OBSERVED_DETAILS.to_vec();
+        extended.extend_from_slice(&[0; 4][..extra]);
+        assert_eq!(
+            decode_response(Profile::ObservedLinux3111d, &extended),
+            Err(Error::TrailingData)
+        );
+    }
+}
+
+#[test]
+fn observed_details_profile_shape_and_protocol_guard_errors_are_atomic() {
+    let published = Response::Details(Box::new(observed_details(0).published));
+    assert_observed_rejected(&published, Error::ProfileMismatch);
+    let observed = Response::ObservedDetails(Box::new(observed_details(0xa7)));
+    assert_rejected(&observed, Error::ProfileMismatch);
+    for protocol in [0, 42, 45, 47, 48, 255] {
+        let mut wrong = observed_details(0xa7);
+        wrong.published.protocol = protocol;
+        assert_observed_rejected(
+            &Response::ObservedDetails(Box::new(wrong)),
+            Error::ObservedProtocolGuard,
+        );
+        let mut manual = OBSERVED_DETAILS.to_vec();
+        // The protocol follows the five independently authored two-byte strings
+        // and the player/max-player bytes, at synthetic offset 17.
+        manual[17] = protocol;
+        assert_eq!(
+            decode_response(Profile::ObservedLinux3111d, &manual),
+            Err(Error::ObservedProtocolGuard)
+        );
+        assert!(decode_response(PROFILE, &manual[..manual.len() - 1]).is_ok());
+    }
+}
+
+#[test]
+fn observed_profile_keeps_exact_ascii_requests_and_documented_list_candidates() {
+    for (request, manual) in [
+        (Request::Details, b"\xff\xff\xff\xffdetails".as_slice()),
+        (Request::Players, b"\xff\xff\xff\xffplayers".as_slice()),
+        (Request::Rules, b"\xff\xff\xff\xffrules".as_slice()),
+    ] {
+        assert_eq!(
+            decode_request(Profile::ObservedLinux3111d, manual),
+            Ok(request)
+        );
+        let mut output = [0xa5; 32];
+        assert_eq!(
+            encode_request(Profile::ObservedLinux3111d, request, &mut output)
+                .unwrap()
+                .as_bytes(),
+            manual
+        );
+        assert!(output[manual.len()..].iter().all(|byte| *byte == 0xa5));
+        let mut suffixed = manual.to_vec();
+        suffixed.push(0);
+        assert_eq!(
+            decode_request(Profile::ObservedLinux3111d, &suffixed),
+            Err(Error::TrailingData)
+        );
+        let mut small = [0xa5; 1];
+        assert_eq!(
+            encode_request(Profile::ObservedLinux3111d, request, &mut small),
+            Err(Error::OutputTooSmall)
+        );
+        assert_eq!(small, [0xa5]);
+    }
+    for (response, manual) in [(players(), PLAYERS), (rules(), RULES)] {
+        assert_eq!(
+            decode_response(Profile::ObservedLinux3111d, manual),
+            Ok(response.clone())
+        );
+        let mut output = [0xa5; 128];
+        assert_eq!(
+            encode_response(Profile::ObservedLinux3111d, &response, &mut output)
+                .unwrap()
+                .as_bytes(),
+            manual
+        );
+    }
+}
+
+#[test]
+fn observed_profile_preserves_candidate_mod_fields_and_existing_text_validation() {
+    let mut published = modified_details();
+    published.protocol = 46;
+    let response = Response::ObservedDetails(Box::new(ObservedDetails {
+        published,
+        opaque_extension: 0x91,
+    }));
+    let mut manual = MOD_DETAILS.to_vec();
+    manual[17] = 46;
+    manual.push(0x91);
+    let mut output = [0xa5; 128];
+    assert_eq!(
+        encode_response(Profile::ObservedLinux3111d, &response, &mut output)
+            .unwrap()
+            .as_bytes(),
+        manual
+    );
+    assert_eq!(
+        decode_response(Profile::ObservedLinux3111d, &manual),
+        Ok(response)
+    );
+    for (text, expected) in [
+        ("x".repeat(MAX_STRING_BYTES + 1), Error::StringLimit),
+        ("PRIVATE\0SYNTHETIC".into(), Error::EmbeddedNul),
+    ] {
+        for response in responses_with_text(&text) {
+            let converted = if let Response::Details(mut published) = response {
+                published.protocol = 46;
+                Response::ObservedDetails(Box::new(ObservedDetails {
+                    published: *published,
+                    opaque_extension: 0xa7,
+                }))
+            } else {
+                response
+            };
+            assert_observed_rejected(&converted, expected);
+        }
+    }
+    let mut invalid_utf8 = OBSERVED_DETAILS.to_vec();
+    invalid_utf8[5] = 255;
+    assert_eq!(
+        decode_response(Profile::ObservedLinux3111d, &invalid_utf8),
+        Err(Error::InvalidUtf8)
+    );
+}
+
+#[test]
+fn observed_profile_preserves_logical_and_list_budgets() {
+    let maximum = rules_sized(MAX_RESPONSE_BYTES);
+    let mut output = vec![0xa5; MAX_RESPONSE_BYTES];
+    let encoded = encode_response(Profile::ObservedLinux3111d, &maximum, &mut output).unwrap();
+    assert_eq!(encoded.len(), MAX_RESPONSE_BYTES);
+    assert_eq!(
+        decode_response(Profile::ObservedLinux3111d, encoded.as_bytes()),
+        Ok(maximum)
+    );
+    assert_observed_rejected(&rules_sized(MAX_RESPONSE_BYTES + 1), Error::ResponseLimit);
+    let rule = ServerRule {
+        name: String::new(),
+        value: String::new(),
+    };
+    assert_observed_rejected(
+        &Response::Rules(vec![rule; MAX_RULES + 1]),
+        Error::RuleLimit,
+    );
+    let player = PlayerInfo {
+        index: 0,
+        name: String::new(),
+        score: 0,
+        duration_seconds: 0.0,
+    };
+    assert_observed_rejected(&Response::Players(vec![player; 256]), Error::PlayerLimit);
+    let mut too_large = vec![0; MAX_RESPONSE_BYTES + 1];
+    too_large[..4].fill(255);
+    assert_eq!(
+        decode_response(Profile::ObservedLinux3111d, &too_large),
+        Err(Error::ResponseLimit)
+    );
+}
+
+#[test]
+fn observed_details_capacity_and_automatic_diagnostics_preserve_boundaries() {
+    let mut first = observed_details(0xa7);
+    first.published.name = "SYNTHETIC_PRIVATE_MARKER".into();
+    let mut second = first.clone();
+    second.opaque_extension = 0x91;
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    assert!(!format!("{first:?}").contains("SYNTHETIC_PRIVATE_MARKER"));
+    let first = Response::ObservedDetails(Box::new(first));
+    let second = Response::ObservedDetails(Box::new(second));
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    let response = Response::ObservedDetails(Box::new(observed_details(0xa7)));
+    for capacity in [0, OBSERVED_DETAILS.len() - 1] {
+        let mut output = vec![0xa5; capacity];
+        assert_eq!(
+            encode_response(Profile::ObservedLinux3111d, &response, &mut output),
+            Err(Error::OutputTooSmall)
+        );
+        assert!(output.iter().all(|byte| *byte == 0xa5));
+    }
+    let mut output = [0xa5; 128];
+    let encoded = encode_response(Profile::ObservedLinux3111d, &first, &mut output).unwrap();
+    let diagnostic = format!("{encoded:?}");
+    assert!(!diagnostic.contains("SYNTHETIC_PRIVATE_MARKER"));
+    assert!(!diagnostic.contains("[255"));
 }

@@ -21,14 +21,20 @@ Worker errors and CLI output exclude server-provided text.
 Pure query codecs now serve both directions. `ohl-net::server` decodes later
 A2S requests, encodes the existing response model and packetizes bounded
 GoldSrc query responses. Token generation/expiry, sender checks, rate limits
-and challenge policy belong to its host. `ohl-net::legacy` instead requires
-`Profile::PublishedAscii` for historical ASCII requests and separate response
-models. Its `Details` ends at `secure_server`, without inventing a bot count;
-the optional mod metadata preserves its full unused string. Selected LE,
+and challenge policy belong to its host. `ohl-net::legacy` uses explicit
+profiles for historical ASCII requests. `Profile::PublishedAscii` selects
+separate published response models. Its `Details` ends at `secure_server`,
+without inventing a bot count; optional mod metadata preserves its full
+unused string. Selected LE,
 IEEE-754 binary32, strict UTF-8 and canonical-boolean primitives remain
-unverified for the chosen pre-Steam runtime. These modules provide no
-gameplay sockets, player admission or historical query transport, and the
-CLI/browser continues to use the earlier A2S query client. Exact limits and
+only partly observed for the pre-Steam reference. An explicit
+`Profile::ObservedLinux3111d` adds a separate `ObservedDetails` response with
+the published fields and one opaque extension byte, guarded to protocol 46.
+The byte has no bot interpretation or implicit default; `PublishedAscii`
+retains its exact boundary. Only empty Players and one 48-rule cohort have
+been observed, without populated-player float verification. These modules
+provide no gameplay sockets, player admission or historical query transport.
+The CLI/browser continues to use the earlier A2S query client. Exact limits and
 sources are recorded in [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md).
 
 `ohl-net::message::MessageReader` separately reads an already isolated
