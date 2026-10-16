@@ -1981,6 +1981,8 @@ struct App<'a> {
     screen: Screen,
     /// The menu's navigation and every option the player has set.
     menu: MenuState,
+    /// Bounded query worker, polled even when the menu pauses local gameplay.
+    network_browser: crate::network::Browser,
     /// The pane the menu showed last frame, to notice it changing.
     last_pane: MenuPane,
     /// Where the options are saved, when the platform has a configuration
@@ -2082,6 +2084,7 @@ impl<'a> App<'a> {
             console: Console::new(),
             screen,
             menu: MenuState::new(),
+            network_browser: crate::network::Browser::default(),
             last_pane: MenuPane::Root,
             settings_path: None,
             settings_dirty: false,
@@ -2188,6 +2191,19 @@ impl<'a> App<'a> {
                 MenuAction::JoinLanServer { .. } => {
                     tracing::info!("Joining LAN games is not implemented yet.");
                     self.menu.notify("Joining LAN games is not available yet.");
+                }
+                MenuAction::RefreshLanServers => {
+                    self.menu.begin_lan_search();
+                    if !self.network_browser.discover() {
+                        self.menu
+                            .complete_lan_search(Err("The server search could not be started."));
+                    }
+                }
+                MenuAction::QueryLanServer { address } => {
+                    self.menu.begin_lan_search();
+                    if let Err(error) = self.network_browser.query(&address) {
+                        self.menu.complete_lan_search(Err(error));
+                    }
                 }
                 MenuAction::OptionsChanged => {
                     self.apply_options();
@@ -2679,6 +2695,9 @@ impl<'a> App<'a> {
                   the borrow of the active window across helpers"
     )]
     fn draw(&mut self) {
+        if let Some(result) = self.network_browser.poll() {
+            self.menu.complete_lan_search(result);
+        }
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;

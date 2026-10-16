@@ -131,6 +131,10 @@ record alongside the extracted payload. See
 [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
 production-readiness matrix and release-evidence gates.
 
+For the initial public behavior baseline, REA's current ISO limitation, and
+repeatable black-box observation scenarios, see
+[the clean-room behavior specification](docs/BEHAVIOR_SPEC.md).
+
 ## Running
 
 These are the exact commands for each step; see
@@ -185,8 +189,11 @@ back one page at a time.
   levels; levels your game data lacks are listed but greyed out), *Hazard
   Course*, and *Load Game* (every save slot, newest first).
 - **Multiplayer** — *Skirmish* (the offline deathmatch against bots below),
-  *Create LAN Server* and *Find LAN Games*. The two LAN pages are previews:
-  their forms work, but nothing is networked yet and they say so.
+  *Create LAN Server* and *Find LAN Games*. The browser sends original Valve
+  queries and displays responding servers, maps, player counts, latency and
+  protocol versions. It can also query a numeric IP address and port.
+  Creating and joining network gameplay remain unavailable while the original
+  GoldSrc gameplay channel is being specified and validated.
 - **Options** — *Video* (windowed, borderless or exclusive fullscreen,
   resolution, applied with APPLY; vertical sync, a frame-rate cap, the
   vertical field of view, the performance overlay), *Audio* (master,
@@ -225,6 +232,24 @@ ammo reappear after 20 s, items after 30 s. Hold
 or pass `--force-respawn` to come back automatically. A skirmish is never
 saved. With `--script` it runs headless and logs an aggregate summary
 (combatants, deaths, frags) at the end. See `docs/MILESTONES.md`, "M9.56".
+
+**Original-protocol server queries** work without an ISO or imported assets:
+
+```sh
+cargo run -p ohl-app -- --query-server 127.0.0.1:27015
+```
+
+The CLI prints protocol and player-count aggregates; server-provided names,
+maps and rule strings stay out of logs. The LAN browser searches UDP port
+27015; use **Query address** for a different numeric address or port.
+Queries use the original documented INFO/PLAYER/RULES protocol, including
+challenges and GoldSrc split replies. They do not establish a gameplay
+connection. The Rust engine also exposes dedicated deathmatch actors with up
+to 32 humans/bots, stable player identities, authoritative command processing,
+combat, pickups, scoring and respawn. That API is independent of transport;
+original gameplay packet framing, deltas, movement and authentication remain
+unimplemented. See [the protocol evidence and remaining
+work](docs/GOLDSRC_PROTOCOL.md) for verified coverage and reference testing.
 
 **Headless screenshots**, for a machine with no display server (a GPU
 adapter is still required):

@@ -81,6 +81,31 @@ fn default_screen_is_in_game() {
 }
 
 #[test]
+fn server_search_uses_host_completion_and_retains_results_on_transient_error() {
+    let mut state = MenuState::new();
+    state.begin_lan_search();
+    assert!(state.lan_search_pending);
+    let server = super::LanGame {
+        address: "192.0.2.1:27015".to_owned(),
+        name: "Synthetic server".to_owned(),
+        map: "synthetic-arena".to_owned(),
+        players: 2,
+        max_players: 8,
+        protocol: 48,
+        password_protected: false,
+        ping_millis: 3,
+    };
+    state.complete_lan_search(Ok(vec![server.clone()]));
+    assert!(!state.lan_search_pending);
+    assert_eq!(state.lan_games, vec![server]);
+    state.begin_lan_search();
+    state.complete_lan_search(Err("Synthetic query failure."));
+    assert!(!state.lan_search_pending);
+    assert_eq!(state.lan_games.len(), 1);
+    assert_eq!(state.lan_search_error, Some("Synthetic query failure."));
+}
+
+#[test]
 fn menu_state_starts_at_the_root_pane() {
     let state = MenuState::new();
     assert_eq!(state.pane, MenuPane::Root);

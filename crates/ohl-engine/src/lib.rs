@@ -84,6 +84,7 @@ pub mod route_plan;
 
 // Local skirmish (deathmatch against bots, offline): the bots, their
 // walkable graph and the match rules. See this module's own doc comment.
+pub mod deathmatch;
 pub mod skirmish;
 
 #[cfg(any(test, feature = "test-support"))]

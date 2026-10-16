@@ -225,6 +225,23 @@ impl Game {
         source: &dyn AssetSource,
         config: &crate::skirmish::SkirmishConfig,
     ) -> Result<()> {
+        self.start_skirmish_with_mode(source, config, true)
+    }
+
+    pub(crate) fn start_dedicated_deathmatch(
+        &mut self,
+        source: &dyn AssetSource,
+        config: &crate::skirmish::SkirmishConfig,
+    ) -> Result<()> {
+        self.start_skirmish_with_mode(source, config, false)
+    }
+
+    fn start_skirmish_with_mode(
+        &mut self,
+        source: &dyn AssetSource,
+        config: &crate::skirmish::SkirmishConfig,
+        local_human: bool,
+    ) -> Result<()> {
         if self.is_skirmish() {
             return Ok(());
         }
@@ -234,7 +251,7 @@ impl Game {
         let player = self
             .level
             .load_extra_studio_model(source, crate::skirmish::PLAYER_MODEL_PATH);
-        let weapons = if player.is_some() && config.bots > 0 {
+        let weapons = if player.is_some() {
             ohl_combat::WeaponId::ALL
                 .into_iter()
                 .filter_map(|weapon| {
@@ -258,6 +275,7 @@ impl Game {
             &mut self.controller,
             *config,
             crate::skirmish::animation::BotModels { player, weapons },
+            local_human,
         );
         // A deathmatch arena is no chapter.
         self.pending
@@ -269,6 +287,18 @@ impl Game {
     #[must_use]
     pub fn is_skirmish(&self) -> bool {
         self.systems.skirmish.is_some()
+    }
+
+    pub(crate) fn deathmatch_parts_mut(&mut self) -> (&mut Level, &mut Systems) {
+        (&mut self.level, &mut self.systems)
+    }
+
+    pub(crate) fn deathmatch_state(&self) -> Option<&crate::skirmish::SkirmishState> {
+        self.systems.skirmish.as_deref()
+    }
+
+    pub(crate) fn deathmatch_tick_count(&self) -> u64 {
+        self.systems.deathmatch_tick_count()
     }
 
     /// The running skirmish's scoreboard, clock and respawn state, or

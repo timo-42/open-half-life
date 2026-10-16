@@ -254,7 +254,10 @@ impl Brain {
 /// A bot. See the module docs.
 pub(crate) struct Bot {
     pub(crate) entity: Entity,
-    pub(crate) name: &'static str,
+    pub(crate) name: String,
+    connected: bool,
+    remote: Option<crate::deathmatch::RemoteControl>,
+    blocked_movers: Vec<ohl_physics::BrushId>,
     controller: PlayerController,
     view: FreeFlyCamera,
     player: Player,
@@ -280,7 +283,7 @@ impl Bot {
     pub(crate) fn new(
         level: &mut Level,
         index: u8,
-        name: &'static str,
+        name: &str,
         skill: BotSkill,
         seed: u64,
         models: &BotModels,
@@ -309,7 +312,10 @@ impl Bot {
         }
         Self {
             entity,
-            name,
+            name: name.to_owned(),
+            connected: true,
+            remote: None,
+            blocked_movers: Vec::new(),
             controller: PlayerController::default(),
             view: FreeFlyCamera::default(),
             player: Player::default(),
@@ -325,7 +331,84 @@ impl Bot {
     }
 
     pub(crate) fn alive(&self) -> bool {
-        self.dead_for.is_none()
+        self.connected && self.dead_for.is_none()
+    }
+
+    pub(crate) fn connected(&self) -> bool {
+        self.connected
+    }
+
+    pub(crate) fn take_blocked_movers(&mut self) -> Vec<ohl_physics::BrushId> {
+        std::mem::take(&mut self.blocked_movers)
+    }
+
+    pub(crate) fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    pub(crate) fn enable_remote(&mut self) {
+        self.remote = Some(crate::deathmatch::RemoteControl::new());
+    }
+
+    pub(crate) fn disconnect(&mut self, level: &mut Level) {
+        self.connected = false;
+        self.dead_for = Some(0.0);
+        self.remote = None;
+        let _ = level.registry.world.despawn(self.entity);
+    }
+
+    pub(crate) fn submit_remote(
+        &mut self,
+        command: crate::deathmatch::PlayerCommand,
+    ) -> Result<(), crate::deathmatch::DeathmatchError> {
+        self.remote
+            .as_mut()
+            .ok_or(crate::deathmatch::DeathmatchError::UnknownPlayer)?
+            .submit(command)
+    }
+
+    pub(crate) fn prepare_remote_step(&mut self, dt: f32) {
+        if let Some(remote) = self.remote.as_mut() {
+            remote.prepare(
+                dt,
+                self.controller.state.noclip || self.controller.state.is_swimming(),
+            );
+            if let Some(angles) = remote.step.view_angles {
+                self.view.pitch = angles[0];
+                self.view.yaw = angles[1];
+            }
+        }
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        id: crate::deathmatch::PlayerId,
+        frags: i32,
+        deaths: u32,
+    ) -> crate::deathmatch::PlayerSnapshot {
+        let weapon = self.combat.selected_weapon();
+        crate::deathmatch::PlayerSnapshot {
+            id,
+            name: self.name.clone(),
+            is_bot: !self.is_remote(),
+            origin: self.controller.state.origin.to_array(),
+            velocity: self.controller.state.velocity.to_array(),
+            view_angles: [self.view.pitch, self.view.yaw, 0.0],
+            on_ground: self.controller.state.on_ground,
+            ducked: self.controller.state.ducked,
+            health: self.player.state.health,
+            armor: self.player.state.armor,
+            flashlight_on: self.player.state.flashlight.on,
+            alive: self.alive(),
+            weapon,
+            clip: weapon.map_or(0, |weapon| self.combat.clip(weapon)),
+            reserve: weapon
+                .and_then(|weapon| spec(weapon).ammo)
+                .map_or(0, |ammo| self.combat.reserve(ammo)),
+            frags,
+            deaths,
+            last_processed_sequence: self.remote.as_ref().and_then(|remote| remote.processed),
+        }
     }
 
     pub(crate) fn origin(&self) -> Vec3 {
@@ -365,6 +448,7 @@ impl Bot {
         self.dead_for = None;
         self.world_death = false;
         self.touching_teleports.clear();
+        self.blocked_movers.clear();
         let world = &mut level.registry.world;
         if let Ok(mut body) = world.get::<&mut BotBody>(self.entity) {
             body.alive = true;
@@ -424,6 +508,9 @@ impl Bot {
             return;
         }
         self.dead_for = Some(0.0);
+        if let Some(remote) = self.remote.as_mut() {
+            remote.respawn_released = false;
+        }
         self.world_death = false;
         self.player.state.dead = true;
         self.controller.state.velocity = Vec3::ZERO;
@@ -459,12 +546,24 @@ impl Bot {
     }
 
     /// Counts a dead bot's wait; `true` once it should respawn.
-    pub(crate) fn ready_to_respawn(&mut self, dt: f32) -> bool {
+    pub(crate) fn ready_to_respawn(&mut self, dt: f32, force_respawn: bool) -> bool {
+        if !self.connected {
+            return false;
+        }
         let Some(dead_for) = self.dead_for.as_mut() else {
             return false;
         };
         *dead_for += dt;
-        *dead_for >= super::BOT_RESPAWN_SECONDS
+        if let Some(remote) = self.remote.as_mut() {
+            let pressed = remote.step.input.attack || remote.step.input.jump;
+            if !pressed {
+                remote.respawn_released = true;
+            }
+            (remote.respawn_released && pressed && *dead_for >= super::RESPAWN_CLICK_DELAY_SECONDS)
+                || (force_respawn && *dead_for >= super::FORCE_RESPAWN_SECONDS)
+        } else {
+            *dead_for >= super::BOT_RESPAWN_SECONDS
+        }
     }
 
     /// Moves the bot by `push` when the destination is clear (see
@@ -487,6 +586,9 @@ impl Bot {
     pub(crate) fn idle(&mut self, level: &mut Level, dt: f32) {
         self.brain.intent = Intent::default();
         if self.alive() {
+            if let Some(remote) = self.remote.as_mut() {
+                remote.step = crate::deathmatch::RemoteStep::default();
+            }
             self.move_step(level, dt);
         } else if !self.controller.state.on_ground {
             let blocked = level.movers_blocked.len();
@@ -638,7 +740,11 @@ impl Bot {
 
     /// Whether the bot pulled the trigger this step.
     pub(crate) fn firing(&self) -> bool {
-        self.alive() && self.brain.intent.attack
+        self.alive()
+            && self
+                .remote
+                .as_ref()
+                .map_or(self.brain.intent.attack, |remote| remote.step.input.attack)
     }
 
     fn forward(&self) -> Vec3 {
@@ -1154,6 +1260,29 @@ impl Bot {
     /// move the human makes, then runs its own player systems (fall
     /// damage, hazards).
     pub(crate) fn move_step(&mut self, level: &mut Level, dt: f32) {
+        if let Some(remote) = self.remote.as_ref() {
+            let step = remote.step;
+            self.controller.long_jump_owned = self.player.state.longjump_owned;
+            let blocked = level.movers_blocked.len();
+            let events = crate::systems::Systems::player_move_analog(
+                level,
+                &mut self.view,
+                &mut self.controller,
+                step.wish_move,
+                step.input,
+                dt,
+            );
+            self.blocked_movers
+                .extend(level.movers_blocked.drain(blocked..));
+            let physics = ohl_player::PhysicsOutput::from_move(
+                &self.controller.state,
+                &self.controller.config,
+                &events,
+            );
+            self.player_systems_from_physics(level, step.input, dt, physics);
+            self.sync_transform(level);
+            return;
+        }
         let intent = self.brain.intent;
         let forward = self.forward();
         let right = Vec3::new(forward.y, -forward.x, 0.0);
@@ -1191,18 +1320,28 @@ impl Bot {
 
     /// The bot's own fall damage and hazard volumes.
     fn player_systems(&mut self, level: &Level, input: LatchedInput, dt: f32) {
-        use ohl_player::PlayerSystems as _;
-        let Some(collision) = level.collision.as_ref() else {
-            return;
-        };
         let physics = ohl_player::PhysicsOutput::from_move(
             &self.controller.state,
             &self.controller.config,
             &self.controller.last_move_events(),
         );
+        self.player_systems_from_physics(level, input, dt, physics);
+    }
+
+    fn player_systems_from_physics(
+        &mut self,
+        level: &Level,
+        input: LatchedInput,
+        dt: f32,
+        physics: ohl_player::PhysicsOutput,
+    ) {
+        use ohl_player::PlayerSystems as _;
+        let Some(collision) = level.collision.as_ref() else {
+            return;
+        };
         let mut player_input = ohl_player::PlayerInput {
-            flashlight_pressed: false,
-            use_held: false,
+            flashlight_pressed: input.flashlight_pressed,
+            use_held: input.use_held,
             jump: input.jump,
             duck: input.duck,
             hurt: Vec::new(),
@@ -1225,6 +1364,7 @@ impl Bot {
 
     /// Fires (or reloads, or switches) with this step's decision, through
     /// the human's own weapon code.
+    #[cfg(test)]
     pub(crate) fn fire(
         &mut self,
         level: &Level,
@@ -1232,15 +1372,33 @@ impl Bot {
         damage_queue: &mut Vec<QueuedDamage>,
         dt: f32,
     ) -> Option<PlayerProjectileCommand> {
+        self.fire_with_satchels(level, hitboxes, damage_queue, dt, 0)
+    }
+
+    pub(crate) fn fire_with_satchels(
+        &mut self,
+        level: &Level,
+        hitboxes: &ohl_combat::HitboxIndex,
+        damage_queue: &mut Vec<QueuedDamage>,
+        dt: f32,
+        owned_satchels: usize,
+    ) -> Option<PlayerProjectileCommand> {
         let intent = self.brain.intent;
-        if let Some(weapon) = intent.select {
+        let select = self
+            .remote
+            .as_ref()
+            .map_or(intent.select, |remote| remote.step.weapon);
+        if let Some(weapon) = select {
             self.combat.select_weapon(weapon);
         }
-        let input = LatchedInput {
-            attack: intent.attack,
-            reload_pressed: intent.reload,
-            ..LatchedInput::default()
-        };
+        let input = self.remote.as_ref().map_or(
+            LatchedInput {
+                attack: intent.attack,
+                reload_pressed: intent.reload,
+                ..LatchedInput::default()
+            },
+            |remote| remote.step.input,
+        );
         self.combat.weapons(
             level,
             &self.controller,
@@ -1251,7 +1409,7 @@ impl Bot {
             damage_queue,
             &mut self.hud,
             &mut self.presentation,
-            0,
+            owned_satchels,
         )
     }
 
@@ -1262,7 +1420,30 @@ impl Bot {
 
     /// Takes every untaken pickup within reach, the way the human does
     /// (`crate::pickups`' own grant rules and touch radius).
-    pub(crate) fn touch_pickups(&mut self, level: &mut Level) {
+    pub(crate) fn touch_pickups(
+        &mut self,
+        level: &mut Level,
+        pickups: &mut crate::pickups::PickupsState,
+        dt: f32,
+    ) {
+        if let Some(remote) = self.remote.as_ref() {
+            let origin = self.origin();
+            let (inventory, ammo) = self.combat.inventory_and_ammo_mut();
+            pickups.run(
+                level,
+                origin,
+                self.entity.id(),
+                remote.step.input,
+                dt,
+                inventory,
+                ammo,
+                &mut self.player,
+                &mut self.hud,
+                &mut self.presentation,
+            );
+            self.mirror_health(level);
+            return;
+        }
         let origin = self.origin();
         let touched: Vec<(Entity, PickupKind)> = level
             .registry
@@ -1314,6 +1495,22 @@ impl Bot {
         let _ = level
             .simulation
             .touch_doors_by(&mut level.registry, Some(self.entity), mins, maxs);
+        if let Some(remote) = self.remote.as_ref()
+            && remote.step.input.use_pressed
+        {
+            let position = self.eye();
+            if let Some(target) =
+                ohl_game::find_usable_within(&level.registry, position, crate::USE_RADIUS)
+            {
+                level.simulation.set_activator_origin(Some(position));
+                level.simulation.use_entity(
+                    &mut level.registry,
+                    target,
+                    Some(self.entity),
+                    &mut Vec::new(),
+                );
+            }
+        }
         self.teleport(level, mins, maxs);
     }
 

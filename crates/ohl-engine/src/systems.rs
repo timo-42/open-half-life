@@ -1052,6 +1052,16 @@ impl Systems {
         );
         self.player_systems(level, input, dt); // 3
         Self::actor_sync(level, camera, controller, dt); // 4
+        if let Some(skirmish) = self.skirmish.as_mut() {
+            let human = crate::skirmish::HumanView {
+                entity: level.player,
+                origin: controller.state.origin,
+                eye: controller.eye_position(),
+                alive: !self.player.state.dead,
+                firing: input.attack && !self.player.state.dead,
+            };
+            skirmish.move_combatants(level, human, dt);
+        }
         self.rebuild_hitbox_index(level, controller); // 5
         self.begin_map_effects(level, controller, dt); // 5b
         // A dead skirmish player's fire button is a respawn click (phase
@@ -1063,7 +1073,7 @@ impl Systems {
             input
         };
         let consumed_use = self.turret_and_handheld_weapons(level, controller, dt, weapon_input); // 5c/6
-        self.skirmish_bots(level, controller, weapon_input, dt); // 6b
+        self.skirmish_fire(level, dt); // 6b
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
         Self::sync_monster_transforms(level); // 8b
@@ -1072,7 +1082,7 @@ impl Systems {
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
         if let Some(skirmish) = self.skirmish.as_mut() {
-            skirmish.pickups(level, dt); // 11b
+            skirmish.pickups(level, dt, &mut self.pickups); // 11b
             for bot in &mut skirmish.bots {
                 bot.update_animation(level);
                 self.presentation.add_sounds(bot.drain_sounds());
@@ -1093,8 +1103,14 @@ impl Systems {
         // 2) and after phase 12's own touch tests, and before the next
         // step's `Level::sync_brush_collision` moves the affected brush
         // hulls to match (`docs/FORMAT_SOURCES.md`, item 32).
-        crate::pushables::push_pushables(level, controller, input.controller_input(), dt); // 12b
-        Self::break_pressured_breakables(level, controller); // 12b
+        if self
+            .skirmish
+            .as_ref()
+            .is_none_or(|skirmish| skirmish.has_local_human())
+        {
+            crate::pushables::push_pushables(level, controller, input.controller_input(), dt); // 12b
+            Self::break_pressured_breakables(level, controller); // 12b
+        }
         self.capture_map_effects(level); // late effects resolve combat next step
         crate::camera::apply_override(level, camera); // 12.5
         self.presentation(level, dt); // 13
@@ -1141,110 +1157,11 @@ impl Systems {
         input: LatchedInput,
         dt: f32,
     ) {
-        if let Some(collision) = level.collision.as_ref() {
-            // The ground brush already moved in phase 2a. Carry its rider
-            // by that complete rigid motion before probing the ground or
-            // walking: a translating car's rear wall can otherwise move
-            // into a passenger pressed against it, and a turning car can
-            // sweep its walls across them. Blending the translation into
-            // walking velocity is too late to recover an embedded start,
-            // and clips the passenger's own velocity against moving walls
-            // as though those walls were stationary.
-            let ground = controller
-                .state
-                .ground_brush
-                .filter(|_| controller.state.on_ground && !controller.state.noclip);
-            let origin = controller.state.origin;
-            let carried_by_mover = ground.and_then(|brush| {
-                let translation = level
-                    .brush_velocity
-                    .get(&brush)
-                    .copied()
-                    .unwrap_or(Vec3::ZERO)
-                    * dt;
-                let carried =
-                    level.rotational_carry(brush, origin, dt).unwrap_or(origin) + translation;
-                if carried == origin {
-                    return None;
-                }
-                // Ignore the ground brush during the sweep: its new pose
-                // may already overlap the rider's old position. Other
-                // solids still block the carry, and the destination must
-                // also clear the ground brush in its new pose.
-                let sweep =
-                    collision.trace_ignoring(controller.state.hull(), origin, carried, Some(brush));
-                (sweep.fraction >= 1.0
-                    && !sweep.start_solid
-                    && !collision
-                        .trace(controller.state.hull(), carried, carried)
-                        .start_solid)
-                    .then_some(carried)
-            });
-            if let Some(carried) = carried_by_mover {
-                controller.state.origin = carried;
-            }
-            // A mover that moved into the player this step (a closing
-            // `func_door`, a rising `func_plat`) must push them clear
-            // rather than leave them embedded in its new solid; this is
-            // separate from riding one, which the rigid carry above
-            // handles. Cheap in the common case: it costs one
-            // zero-length trace and does nothing further unless that trace
-            // finds the player already standing inside an attached brush.
-            //
-            // The brush the player is *standing on* is excluded: a rising
-            // lift's own top face lands a hair inside the rider's hull
-            // before its carry catches them up, and treating that as a push —
-            // let alone a block — would either double the lift's carry or
-            // deal its `dmg` to its own passenger every tick.
-            //
-            // So the brush underfoot is left out of both the embed probe and
-            // the push's own destination test: probing with it in would let
-            // it hide another mover's embed behind its own lower `BrushId`,
-            // and testing the destination with it in would report every
-            // push of a rider on a rising lift as a block.
-            let probe = collision.trace_ignoring(
-                controller.state.hull(),
-                controller.state.origin,
-                controller.state.origin,
-                ground,
-            );
-            if probe.start_solid
-                && let Some(brush) = probe.brush_index
-            {
-                // A rotating brush sweeping into the player counts here
-                // exactly like a translating one closing on them: the
-                // velocity of the brush *at the player's own position* is
-                // what has to push them clear, which for a rotation grows
-                // with their distance from its axis. The brush's own
-                // motion only: a conveyor's belt is not closing on anyone,
-                // and must not shove a player caught inside its hull.
-                let velocity = level.brush_mover_velocity(brush, controller.state.origin);
-                if velocity != Vec3::ZERO
-                    && !ohl_physics::push_from_mover_ignoring(
-                        collision,
-                        &mut controller.state,
-                        velocity * dt,
-                        ground,
-                    )
-                {
-                    level.movers_blocked.push(brush);
-                }
-            }
-            controller.yaw = camera.yaw;
-            controller.pitch = camera.pitch;
-            // A successful rigid carry consumed the brush's translation
-            // and rotation. Only a conveyor's surface velocity remains
-            // for the walking blend. A refused carry retains the ordinary
-            // traced velocity path, so an obstruction cannot teleport the
-            // player into solid. See "Riding movers" in
-            // `docs/FORMAT_SOURCES.md`.
-            controller.base_velocity = ground.map_or(Vec3::ZERO, |brush| {
-                if carried_by_mover.is_some() {
-                    level.conveyor_velocity(brush)
-                } else {
-                    level.brush_ride_velocity(brush, controller.state.origin)
-                }
-            });
+        if level.collision.is_some() {
+            Self::prepare_player_move(level, camera, controller, dt);
+            let Some(collision) = level.collision.as_ref() else {
+                return;
+            };
             controller.advance(collision, &input.controller_input(), dt);
             camera.position = controller.eye_position().to_array();
         } else {
@@ -1259,6 +1176,151 @@ impl Systems {
                 dt,
             );
         }
+    }
+
+    /// Shared mover carry and push preparation for keyboard and analog actors.
+    fn prepare_player_move(
+        level: &mut Level,
+        camera: &FreeFlyCamera,
+        controller: &mut PlayerController,
+        dt: f32,
+    ) {
+        let Some(collision) = level.collision.as_ref() else {
+            return;
+        };
+        // The ground brush already moved in phase 2a. Carry its rider
+        // by that complete rigid motion before probing the ground or
+        // walking: a translating car's rear wall can otherwise move
+        // into a passenger pressed against it, and a turning car can
+        // sweep its walls across them. Blending the translation into
+        // walking velocity is too late to recover an embedded start,
+        // and clips the passenger's own velocity against moving walls
+        // as though those walls were stationary.
+        let ground = controller
+            .state
+            .ground_brush
+            .filter(|_| controller.state.on_ground && !controller.state.noclip);
+        let origin = controller.state.origin;
+        let carried_by_mover = ground.and_then(|brush| {
+            let translation = level
+                .brush_velocity
+                .get(&brush)
+                .copied()
+                .unwrap_or(Vec3::ZERO)
+                * dt;
+            let carried = level.rotational_carry(brush, origin, dt).unwrap_or(origin) + translation;
+            if carried == origin {
+                return None;
+            }
+            // Ignore the ground brush during the sweep: its new pose
+            // may already overlap the rider's old position. Other
+            // solids still block the carry, and the destination must
+            // also clear the ground brush in its new pose.
+            let sweep =
+                collision.trace_ignoring(controller.state.hull(), origin, carried, Some(brush));
+            (sweep.fraction >= 1.0
+                && !sweep.start_solid
+                && !collision
+                    .trace(controller.state.hull(), carried, carried)
+                    .start_solid)
+                .then_some(carried)
+        });
+        if let Some(carried) = carried_by_mover {
+            controller.state.origin = carried;
+        }
+        // A mover that moved into the player this step (a closing
+        // `func_door`, a rising `func_plat`) must push them clear
+        // rather than leave them embedded in its new solid; this is
+        // separate from riding one, which the rigid carry above
+        // handles. Cheap in the common case: it costs one
+        // zero-length trace and does nothing further unless that trace
+        // finds the player already standing inside an attached brush.
+        //
+        // The brush the player is *standing on* is excluded: a rising
+        // lift's own top face lands a hair inside the rider's hull
+        // before its carry catches them up, and treating that as a push —
+        // let alone a block — would either double the lift's carry or
+        // deal its `dmg` to its own passenger every tick.
+        //
+        // So the brush underfoot is left out of both the embed probe and
+        // the push's own destination test: probing with it in would let
+        // it hide another mover's embed behind its own lower `BrushId`,
+        // and testing the destination with it in would report every
+        // push of a rider on a rising lift as a block.
+        let probe = collision.trace_ignoring(
+            controller.state.hull(),
+            controller.state.origin,
+            controller.state.origin,
+            ground,
+        );
+        if probe.start_solid
+            && let Some(brush) = probe.brush_index
+        {
+            // A rotating brush sweeping into the player counts here
+            // exactly like a translating one closing on them: the
+            // velocity of the brush *at the player's own position* is
+            // what has to push them clear, which for a rotation grows
+            // with their distance from its axis. The brush's own
+            // motion only: a conveyor's belt is not closing on anyone,
+            // and must not shove a player caught inside its hull.
+            let velocity = level.brush_mover_velocity(brush, controller.state.origin);
+            if velocity != Vec3::ZERO
+                && !ohl_physics::push_from_mover_ignoring(
+                    collision,
+                    &mut controller.state,
+                    velocity * dt,
+                    ground,
+                )
+            {
+                level.movers_blocked.push(brush);
+            }
+        }
+        controller.yaw = camera.yaw;
+        controller.pitch = camera.pitch;
+        // A successful rigid carry consumed the brush's translation
+        // and rotation. Only a conveyor's surface velocity remains
+        // for the walking blend. A refused carry retains the ordinary
+        // traced velocity path, so an obstruction cannot teleport the
+        // player into solid. See "Riding movers" in
+        // `docs/FORMAT_SOURCES.md`.
+        controller.base_velocity = ground.map_or(Vec3::ZERO, |brush| {
+            if carried_by_mover.is_some() {
+                level.conveyor_velocity(brush)
+            } else {
+                level.brush_ride_velocity(brush, controller.state.origin)
+            }
+        });
+    }
+
+    /// One server step of analog movement, through the same low-level physics.
+    pub(crate) fn player_move_analog(
+        level: &mut Level,
+        camera: &mut FreeFlyCamera,
+        controller: &mut PlayerController,
+        wish_move: Vec3,
+        input: LatchedInput,
+        dt: f32,
+    ) -> ohl_physics::MoveEvents {
+        Self::prepare_player_move(level, camera, controller, dt);
+        let Some(collision) = level.collision.as_ref() else {
+            return ohl_physics::MoveEvents::default();
+        };
+        let movement_input = ohl_physics::MoveInput {
+            wish_move,
+            jump: input.jump,
+            duck: input.duck,
+            base_velocity: controller.base_velocity,
+            long_jump: controller.long_jump_owned,
+        };
+        let events = ohl_physics::player_move_events(
+            collision,
+            &mut controller.state,
+            &movement_input,
+            &controller.config,
+            dt,
+        );
+        camera.position = controller.eye_position().to_array();
+        events
     }
 
     /// Phase 3 — player systems: fall damage, drowning, `trigger_hurt`,
@@ -1663,6 +1725,10 @@ impl Systems {
         dt: f32,
         events: &mut Vec<Event>,
     ) {
+        let local_human = self
+            .skirmish
+            .as_ref()
+            .is_none_or(|state| state.has_local_human());
         // Which side of a `func_door_rotating`'s hinge plane the player is
         // on decides which way it swings ("away from the player"; see
         // `ohl_game::registry::RotatingDoorSwing` and
@@ -1673,7 +1739,7 @@ impl Systems {
         level
             .simulation
             .set_activator_origin(Some(Vec3::from_array(camera.position)));
-        if input.use_pressed {
+        if local_human && input.use_pressed {
             let position = Vec3::from_array(camera.position);
             if let Some(entity) = find_usable_within(&level.registry, position, USE_RADIUS) {
                 let was_closed = door_state(level, entity) == Some(MoverState::Closed);
@@ -1736,10 +1802,13 @@ impl Systems {
         // map may or may not have placed around it (`docs/FORMAT_SOURCES.md`
         // item 30). Run before `touch_triggers`/`tick` below so a door
         // opened this way still gets this same step's `advance_doors` pass.
-        let touch_opened =
+        let touch_opened = if local_human {
             level
                 .simulation
-                .touch_doors(&mut level.registry, player_mins, player_maxs);
+                .touch_doors(&mut level.registry, player_mins, player_maxs)
+        } else {
+            0
+        };
         self.doors_opened += touch_opened as u64;
         // Every living monster's own hull box gets the same touch: a
         // monster walking a route through a touch-eligible door opens it
@@ -1755,13 +1824,15 @@ impl Systems {
         // blocked it, through the same damage queue every other hit uses
         // (resolved by the next step's phase 9).
         self.resolve_blocked_movers(level, dt);
-        self.touch_triggers_fired += u64::from(level.simulation.touch_triggers(
-            &mut level.registry,
-            player_mins,
-            player_maxs,
-            Some(level.player),
-            events,
-        ));
+        if local_human {
+            self.touch_triggers_fired += u64::from(level.simulation.touch_triggers(
+                &mut level.registry,
+                player_mins,
+                player_maxs,
+                Some(level.player),
+                events,
+            ));
+        }
         events.extend(level.simulation.tick(&mut level.registry, dt));
     }
 
@@ -1907,6 +1978,9 @@ impl Systems {
     /// with a door.
     fn resolve_blocked_movers(&mut self, level: &mut Level, dt: f32) {
         let mut blocked: Vec<(Entity, Entity)> = Vec::new();
+        if let Some(skirmish) = self.skirmish.as_mut() {
+            blocked.extend(skirmish.take_blocked_movers(level));
+        }
         for brush in std::mem::take(&mut level.movers_blocked) {
             if let Some(mover) = Self::entity_of_brush(&level.brush_collision, brush) {
                 blocked.push((mover, level.player));
@@ -2103,6 +2177,7 @@ impl Systems {
         controller: &mut PlayerController,
         config: crate::skirmish::SkirmishConfig,
         models: crate::skirmish::animation::BotModels,
+        local_human: bool,
     ) {
         self.ensure_pickups_spawned(level);
         let mut skirmish = crate::skirmish::SkirmishState::new(level, config, models);
@@ -2114,16 +2189,41 @@ impl Systems {
             alive: false,
             firing: false,
         };
-        let spawn = skirmish.pick_spawn(level, human, Some(0));
-        self.respawn_human(level, camera, controller, spawn);
+        if local_human {
+            let spawn = skirmish.pick_spawn(level, human, Some(0));
+            self.respawn_human(level, camera, controller, spawn);
+        } else {
+            skirmish.disable_local_human();
+        }
         let human = crate::skirmish::HumanView {
             origin: controller.state.origin,
             eye: controller.eye_position(),
-            alive: true,
+            alive: local_human,
             ..human
         };
         skirmish.add_bots(level, human);
         self.skirmish = Some(Box::new(skirmish));
+        if !local_human {
+            self.disable_deathmatch_spectator(level);
+        }
+    }
+
+    /// Removes the implicit keyboard actor from a dedicated match.
+    pub(crate) fn disable_deathmatch_spectator(&mut self, level: &mut Level) {
+        self.player.state.dead = true;
+        self.player.state.health = 0.0;
+        crate::combat::sync_player_components(level, &self.player);
+        if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(level.player) {
+            actor.alive = false;
+            actor.health = 0.0;
+        }
+        if let Some(state) = self.skirmish.as_mut() {
+            state.disable_local_human();
+        }
+    }
+
+    pub(crate) fn deathmatch_tick_count(&self) -> u64 {
+        self.substep_counter
     }
 
     /// The running skirmish's status, when there is one.
@@ -2141,29 +2241,19 @@ impl Systems {
             .unwrap_or_default()
     }
 
-    /// Phase 6b — skirmish bots: every living bot senses, decides, moves
-    /// and fires through the same weapon code phase 6 just ran for the
-    /// human, against the same hitbox index. Their projectiles join the
-    /// same projectile system phase 7 advances next.
-    fn skirmish_bots(
-        &mut self,
-        level: &mut Level,
-        controller: &PlayerController,
-        input: LatchedInput,
-        dt: f32,
-    ) {
+    /// Phase 6b — additional combatants fire against the shared index,
+    /// rebuilt after all actors moved. Their projectiles join phase 7.
+    fn skirmish_fire(&mut self, level: &mut Level, dt: f32) {
         let Some(skirmish) = self.skirmish.as_mut() else {
             return;
         };
-        let human = crate::skirmish::HumanView {
-            entity: level.player,
-            origin: controller.state.origin,
-            eye: controller.eye_position(),
-            alive: !self.player.state.dead,
-            firing: !self.player.state.dead && input.attack,
-        };
-        let commands =
-            skirmish.think_and_act(level, human, &self.hitboxes, &mut self.damage_queue, dt);
+        let commands = skirmish.fire_combatants(
+            level,
+            &self.hitboxes,
+            &mut self.damage_queue,
+            &self.projectiles,
+            dt,
+        );
         for (index, command) in commands {
             let success = dispatch_projectile_command(
                 &mut self.projectiles,

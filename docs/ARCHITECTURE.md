@@ -1,5 +1,36 @@
 # Architecture
 
+## Original-protocol multiplayer work
+
+`ohl-net` is a dependency-free leaf for documented Valve connectionless
+queries. It owns bounded UDP request/response handling, challenge retries,
+GoldSrc query-fragment reassembly and LAN discovery. It does not access game
+assets, ECS state, rendering, media import or Steam credentials. `ohl-app`
+owns a bounded background query worker and passes display rows into the UI;
+query work is polled while menus or the console pause local gameplay.
+Worker errors and CLI output exclude server-provided text.
+
+`ohl-engine::deathmatch::Deathmatch` is a separate authoritative gameplay
+adapter over the existing skirmish simulation. It has no socket or dependency
+on `ohl-net`. Dedicated matches disable the implicit local spectator as a
+combatant. Session-scoped, generation-checked player identities select human
+actors; bounded commands carry absolute view angles, analog intent and
+latched action edges. Simulation advances only from server time. Additional
+actors move before hitboxes and weapon resolution so combat uses current
+positions. Existing bot rules and single-player paths retain their own modes.
+
+The adapter's owned snapshots are host state, not GoldSrc packet layouts or
+a complete remote-rendering interface. General trigger activators, mounted
+turrets, pushables and pressure breakables still need multiplayer adaptation.
+Command aggregation within a fixed step is project-defined, with each
+command's movement rotated and capped before duration averaging.
+Original gameplay sign-on, reliable
+channel framing, byte munging, delta schemas, client movement checksums,
+prediction, and authentication have not been implemented. The public
+evidence and compatibility gates are in
+[GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md). A successful server query and
+synthetic multi-human combat test establish separate, bounded results.
+
 Open Half-Life is a Rust workspace split into narrow crates under `crates/`.
 Dependencies point from high-level orchestration toward low-level services;
 `cargo xtask graph` enforces that the intra-workspace dependency graph stays
@@ -10,6 +41,7 @@ not part of the repository).
 | crate | responsibility | std? |
 | --- | --- | --- |
 | `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
+| `ohl-net` | original Valve connectionless server queries and bounded UDP discovery | std |
 | `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
 | `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
 | `ohl-parser-worker` | hosted binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `std`; static musl on Linux, libSystem on macOS |
@@ -42,7 +74,7 @@ not part of the repository).
 | `ohl-app` | composition root binary (`open-half-life`) | std |
 | `xtask` | policy check, worker image build, packaging, campaign/combat smokes | std |
 
-All 36 crates above exist today (verify with `cargo xtask graph`, which
+All 37 crates above exist today (verify with `cargo xtask graph`, which
 checks every crate's dependency edges against `xtask/src/graph.rs`'s
 `ALLOWED_EDGES` table and reports the count it validated). New crates must
 add their dependency-edge row to that table before `cargo xtask graph`
@@ -54,6 +86,7 @@ The allowed direct intra-workspace dependency edges are:
 
 ```text
 ohl-core            -> (none)
+ohl-net             -> (none)
 ohl-parser-protocol -> ohl-core
 ohl-parser-worker-service -> ohl-parser-protocol
 ohl-parser-worker   -> ohl-parser-worker-service

@@ -9661,3 +9661,54 @@ saving and resuming halfway through a scripted walk. All three reproduced
 the bug before the fix. The five relevant integration suites pass (71
 tests), including existing script completion, teleport, interruption,
 following, prisoner and mover checks.
+
+## Original-protocol multiplayer groundwork (2026-10-16)
+
+Status: partial. The requested full deathmatch client/server interoperability
+is not implemented. [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md) records the
+public packet references, a live original-server query observation, bounded
+REA packet inspection, and the remaining evidence gaps. The user's ISO was
+read only; no original source, disassembly or decompilation was used.
+
+`ohl-net` adds independently authored INFO, PLAYER and RULES codecs,
+challenge retries, GoldSrc query-fragment reassembly and bounded UDP
+queries/discovery, without third-party dependencies. The app's LAN browser
+now displays actual query results, and `--query-server IP[:PORT]` works
+without media. The real Rust queries passed against an official, separately
+downloaded protocol-48 Half-Life Dedicated Server on loopback. Synthetic
+fixtures cover additional layouts, malformed replies and bounded transport.
+This does not establish the ISO's runtime version or a gameplay connection.
+
+`ohl-engine::deathmatch` exposes a dedicated authority for up to 32 human/bot
+participants over the shared skirmish simulation. Session/slot generations,
+bounded validated commands, server-time consumption and owned player
+snapshots provide a transport-independent integration point. Human actors
+share movement, handheld weapons/projectiles, damage, pickups/chargers, use
+buttons/doors, teleports, scoring and respawn. Dedicated mode removes the
+implicit local player from combat and scoring; actors move before hitboxes
+are rebuilt. Movement intent is rotated and capped per command before
+fixed-window averaging, a project-defined choice covered by changing-yaw
+and diagonal-input regressions.
+
+The targeted engine run passed 334 unit tests, 14 deathmatch adapter tests
+and 25 existing skirmish tests. The public adapter tests cover admission,
+capacity, stale identities, command validation/replay/bounds, fractional
+input edges, movement, combat, scoring, pickup/crush/use behavior and
+respawn. Those synthetic results establish the Rust API behavior, not
+measured original-game fidelity.
+
+Original gameplay channel framing/reliability, munging, movement checksums,
+delta bootstrap, sign-on/authentication and client prediction remain open.
+Full world replication, general multi-actor triggers, mounted turrets,
+pushables/pressure breakables and remote presentation also need work. The
+LAN host/join actions remain unavailable until an original-compatible
+channel is implemented and verified. A separate runnable original client
+is still needed for the planned black-box gameplay exchange; executing
+binaries from the supplied ISO is excluded by CLEAN_ROOM.md rule 6.
+
+Validation: `cargo test --locked --workspace` passed with 3,252 tests passed
+and 38 ignored across 251 suites. A separate original-HLDS INFO/PLAYER/RULES
+reference query test passed. `cargo fmt --all --check`, strict workspace
+Clippy, staged policy and the 37-crate dependency graph checks passed.
+`cargo-deny` 0.20.2 passed advisories, bans, licenses and sources, with the
+existing duplicate-dependency and license-not-encountered warnings.

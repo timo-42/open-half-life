@@ -36,6 +36,7 @@ mod dev_bsp;
 mod dev_mdl;
 mod frame_profile;
 mod game_run;
+mod network;
 // The route planner's script conversion, closed-loop validation and file
 // writer. Only the `--plan-route` flag that drives it is `dev-tools`; the
 // module itself is compiled (and tested) unconditionally, exactly like
@@ -234,6 +235,11 @@ confuse for one another"
     ))
 )]
 struct Cli {
+    /// Query an original-protocol server without requiring or importing media.
+    #[arg(long, value_name = "IP[:PORT]", value_parser = network::parse_address,
+        conflicts_with_all = ["iso", "path", "play", "training", "skirmish", "map", "load", "script", "headless_screenshot"])]
+    query_server: Option<std::net::SocketAddr>,
+
     /// Path to a Half-Life installation ISO.
     #[arg(long, conflicts_with = "path")]
     iso: Option<PathBuf>,
@@ -1000,6 +1006,13 @@ fn preflight(iso_path: PathBuf) -> Option<(ValidatedMedia, Mount)> {
 }
 
 fn run(cli: Cli) -> ExitCode {
+    if let Some(address) = cli.query_server {
+        return if network::run_query(address) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(EXIT_FAILURE)
+        };
+    }
     tracing::info!("{APP_NAME} {VERSION}");
     tracing::info!("{}", platform_line());
     tracing::debug!(core_version = ohl_core::VERSION, "loaded ohl-core");

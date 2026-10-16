@@ -6,12 +6,10 @@
 //! [`MenuAction::StartSkirmish`]. With no maps supplied it explains that and
 //! keeps the start button disabled.
 //!
-//! Nothing is networked yet. The LAN panes are previews: they gather what a
-//! LAN game would need and report [`MenuAction::HostLanServer`] or
-//! [`MenuAction::JoinLanServer`], and say plainly that LAN play does not
-//! exist yet.
+//! The browser displays host-supplied original-protocol query results.
+//! Hosting and joining gameplay remain explicitly unavailable.
 
-use egui::{Slider, Vec2};
+use egui::Slider;
 
 use super::theme;
 use super::{MenuAction, MenuData, MenuPane, MenuState};
@@ -47,9 +45,19 @@ pub const SKIRMISH_TIME_LIMIT_DEFAULT_MINUTES: u32 = 10;
 /// Player-count bounds the LAN server pane offers.
 pub const LAN_MAX_PLAYERS_RANGE: std::ops::RangeInclusive<u8> = 2..=32;
 
-/// How long the LAN browser "searches" before reporting what it found, in
-/// seconds.
-const LAN_SEARCH_SECONDS: f64 = 1.5;
+/// A local display row produced by a real server query. These untrusted
+/// strings never identify a source-controlled asset or test fixture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanGame {
+    pub address: String,
+    pub name: String,
+    pub map: String,
+    pub players: u8,
+    pub max_players: u8,
+    pub protocol: u8,
+    pub password_protected: bool,
+    pub ping_millis: u32,
+}
 
 /// What the LAN server pane gathers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +124,7 @@ pub(super) fn draw_hub(ui: &mut egui::Ui, state: &mut MenuState) {
         ui.add_space(12.0);
         theme::hint(
             ui,
-            "LAN play is a preview: its panes work, but nothing is networked yet.",
+            "Find LAN Games can query original Half-Life servers. Online play is not available yet.",
         );
     });
     theme::footer(ui, state, |_, _| {});
@@ -259,58 +267,76 @@ pub(super) fn draw_create_server(
     });
 }
 
-/// The LAN browser: an empty game list, a REFRESH that searches (and finds
-/// nothing, there being no LAN play yet) and a connect-by-address field.
+/// The LAN browser: actual host-supplied query results, refresh and direct
+/// address inspection. A query is never presented as a gameplay connection.
 pub(super) fn draw_lan_browser(
     ui: &mut egui::Ui,
     state: &mut MenuState,
-    now: f64,
     actions: &mut Vec<MenuAction>,
 ) {
-    let searching = state
-        .lan_search_started
-        .is_some_and(|started| now - started < LAN_SEARCH_SECONDS);
+    let searching = state.lan_search_pending;
     theme::content(ui, |ui| {
-        theme::preview_banner(
+        theme::hint(
             ui,
-            "Preview: joining LAN games is not implemented yet, so no games can be found.",
+            "Browse original Half-Life servers. Joining gameplay is not available yet.",
         );
         ui.add_space(6.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            // The column headings of the (always empty) game list.
-            let (header, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
-            for (column, offset) in [
-                ("Server", 0.0),
-                ("Map", 0.42),
-                ("Players", 0.7),
-                ("Ping", 0.85),
-            ] {
-                ui.painter().text(
-                    egui::pos2(header.left() + header.width() * offset, header.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    column,
-                    egui::FontId::proportional(15.0),
-                    theme::ACCENT,
+            egui::ScrollArea::vertical()
+                .max_height(240.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("goldsrc_server_results")
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for heading in ["Server", "Map", "Players", "Ping", "Protocol"] {
+                                ui.strong(heading);
+                            }
+                            ui.end_row();
+                            for server in &state.lan_games {
+                                if ui
+                                    .selectable_label(
+                                        state.lan_address == server.address,
+                                        &server.name,
+                                    )
+                                    .clicked()
+                                {
+                                    state.lan_address.clone_from(&server.address);
+                                }
+                                ui.label(&server.map);
+                                ui.label(format!("{}/{}", server.players, server.max_players));
+                                ui.label(format!("{} ms", server.ping_millis));
+                                ui.label(format!(
+                                    "{}{}",
+                                    server.protocol,
+                                    if server.password_protected {
+                                        " (locked)"
+                                    } else {
+                                        ""
+                                    }
+                                ));
+                                ui.end_row();
+                            }
+                        });
+                });
+            if searching {
+                ui.spinner();
+                ui.label("Waiting for server replies…");
+            } else if let Some(error) = state.lan_search_error {
+                ui.label(error);
+            } else if state.lan_games.is_empty() {
+                theme::hint(
+                    ui,
+                    if state.lan_search_completed {
+                        "No supported servers replied. You can query a numeric address below."
+                    } else {
+                        "Press Refresh to search your local network."
+                    },
                 );
             }
-            ui.separator();
-            ui.add_space(18.0);
-            ui.vertical_centered(|ui| {
-                if searching {
-                    ui.spinner();
-                    ui.label("Searching your local network…");
-                } else if state.lan_search_started.is_some() {
-                    ui.label("No LAN games found.");
-                } else {
-                    theme::hint(ui, "Press Refresh to search your local network.");
-                }
-            });
-            ui.add_space(18.0);
         });
         ui.add_space(10.0);
-        theme::heading(ui, "Connect to address");
+        theme::heading(ui, "Server address");
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut state.lan_address)
@@ -321,12 +347,16 @@ pub(super) fn draw_lan_browser(
             );
             let address = state.lan_address.trim();
             if ui
-                .add_enabled(!address.is_empty(), egui::Button::new("Connect"))
+                .add_enabled(
+                    !searching && !address.is_empty(),
+                    egui::Button::new("Query address"),
+                )
                 .clicked()
             {
-                actions.push(MenuAction::JoinLanServer {
+                actions.push(MenuAction::QueryLanServer {
                     address: address.to_owned(),
                 });
+                state.begin_lan_search();
             }
         });
     });
@@ -336,7 +366,8 @@ pub(super) fn draw_lan_browser(
             .inner
             .clicked()
         {
-            state.lan_search_started = Some(now);
+            state.begin_lan_search();
+            actions.push(MenuAction::RefreshLanServers);
         }
     });
 }

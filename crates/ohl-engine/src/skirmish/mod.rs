@@ -285,6 +285,7 @@ pub(crate) struct HumanView {
 
 /// The skirmish's own state, owned by [`crate::systems::Systems`].
 pub(crate) struct SkirmishState {
+    local_human: bool,
     config: SkirmishConfig,
     spawns: Vec<SpawnPoint>,
     nav: NavGraph,
@@ -419,6 +420,7 @@ impl SkirmishState {
         let mut tallies = Vec::with_capacity(usize::from(config.bots) + 1);
         tallies.push(Tally::default());
         Self {
+            local_human: true,
             rng: ohl_ai::Pcg32::new(config.seed),
             config,
             spawns,
@@ -532,7 +534,7 @@ impl SkirmishState {
 
     /// Every living combatant's slot and hull origin.
     fn living_positions(&self, human: HumanView) -> impl Iterator<Item = (Slot, Vec3)> + '_ {
-        let human = human.alive.then_some((HUMAN_SLOT, human.origin));
+        let human = (self.local_human && human.alive).then_some((HUMAN_SLOT, human.origin));
         human.into_iter().chain(
             self.bots
                 .iter()
@@ -549,12 +551,12 @@ impl SkirmishState {
 
     /// Which scoreboard slot `id` (an attacker's combat id) belongs to.
     fn slot_of(&self, id: EntityId, human: Entity) -> Option<Slot> {
-        if id == entity_id(human) {
+        if self.local_human && id == entity_id(human) {
             return Some(HUMAN_SLOT);
         }
         self.bots
             .iter()
-            .position(|bot| entity_id(bot.entity) == id)
+            .position(|bot| bot.connected() && entity_id(bot.entity) == id)
             .map(|index| index + 1)
     }
 
@@ -564,7 +566,7 @@ impl SkirmishState {
         } else {
             self.bots
                 .get(slot - 1)
-                .map_or_else(String::new, |bot| bot.name.to_string())
+                .map_or_else(String::new, |bot| bot.name.clone())
         }
     }
 
@@ -614,7 +616,9 @@ impl SkirmishState {
         if self.winner.is_some() {
             return;
         }
-        let winner = self.ranking().first().copied().unwrap_or(HUMAN_SLOT);
+        let Some(winner) = self.ranking().first().copied() else {
+            return;
+        };
         self.winner = Some(winner);
         self.intermission = Some(0.0);
         self.events.push(SkirmishEvent::MatchOver {
@@ -625,7 +629,15 @@ impl SkirmishState {
     /// Every slot, best first: most frags, then fewest deaths, then the
     /// human ahead of a tied bot, then slot order.
     fn ranking(&self) -> Vec<Slot> {
-        let mut slots: Vec<Slot> = (0..self.tallies.len()).collect();
+        let mut slots: Vec<Slot> = (0..self.tallies.len())
+            .filter(|slot| {
+                if *slot == HUMAN_SLOT {
+                    self.local_human
+                } else {
+                    self.bots[*slot - 1].connected()
+                }
+            })
+            .collect();
         slots.sort_by(|a, b| {
             let (ta, tb) = (self.tallies[*a], self.tallies[*b]);
             tb.frags
@@ -728,7 +740,7 @@ impl SkirmishState {
         attacker: Option<EntityId>,
         kind: DamageType,
     ) {
-        if self.human_dead_for.is_some() {
+        if !self.local_human || self.human_dead_for.is_some() {
             return;
         }
         self.human_dead_for = Some(0.0);
@@ -744,11 +756,16 @@ impl SkirmishState {
 
     /// Phase 11b: every living bot touches the pickups within reach, and
     /// every taken pickup counts down to its respawn.
-    pub(crate) fn pickups(&mut self, level: &mut Level, dt: f32) {
+    pub(crate) fn pickups(
+        &mut self,
+        level: &mut Level,
+        dt: f32,
+        pickups: &mut crate::pickups::PickupsState,
+    ) {
         if self.winner.is_none() {
             for bot in &mut self.bots {
                 if bot.alive() {
-                    bot.touch_pickups(level);
+                    bot.touch_pickups(level, pickups, dt);
                 }
             }
         }
@@ -807,7 +824,7 @@ impl SkirmishState {
             return false;
         }
         for index in 0..self.bots.len() {
-            if self.bots[index].ready_to_respawn(dt) {
+            if self.bots[index].ready_to_respawn(dt, self.config.force_respawn) {
                 let spawn = self.pick_spawn(level, human, Some(index + 1));
                 self.bots[index].respawn(level, spawn);
             }
@@ -865,24 +882,15 @@ impl SkirmishState {
         }
     }
 
-    /// Phase 6b: every living bot senses, decides, moves and fires.
-    /// Returns the projectile commands its weapons produced, paired with
-    /// the bot index, for the caller to dispatch (it owns the projectile
-    /// system) and report back through [`Bot::finish_projectile_command`].
-    pub(crate) fn think_and_act(
-        &mut self,
-        level: &mut Level,
-        human: HumanView,
-        hitboxes: &ohl_combat::HitboxIndex,
-        damage_queue: &mut Vec<QueuedDamage>,
-        dt: f32,
-    ) -> Vec<(usize, crate::combat::PlayerProjectileCommand)> {
-        let mut commands = Vec::new();
+    /// Moves every actor before the shared hitbox index is rebuilt.
+    pub(crate) fn move_combatants(&mut self, level: &mut Level, human: HumanView, dt: f32) {
         if self.winner.is_some() {
             for bot in &mut self.bots {
-                bot.idle(level, dt);
+                if bot.connected() {
+                    bot.idle(level, dt);
+                }
             }
-            return commands;
+            return;
         }
         let opponents: Vec<bot::Opponent> = self
             .living_positions(human)
@@ -907,25 +915,169 @@ impl SkirmishState {
             })
             .collect();
         for index in 0..self.bots.len() {
+            if !self.bots[index].connected() {
+                continue;
+            }
+            self.bots[index].prepare_remote_step(dt);
             if !self.bots[index].alive() {
                 self.bots[index].idle(level, dt);
                 continue;
             }
             let bot = &mut self.bots[index];
-            bot.think(level, &self.nav, &opponents, index + 1, dt);
+            if !bot.is_remote() {
+                bot.think(level, &self.nav, &opponents, index + 1, dt);
+            }
             bot.move_step(level, dt);
             if bot.died_from_world() {
                 // A fall or a hazard killed it mid-step: it does not get to
                 // fire on its way down.
                 bot.die(level);
                 self.record_death(index + 1, None, None);
-                continue;
             }
-            if let Some(command) = bot.fire(level, hitboxes, damage_queue, dt) {
+        }
+    }
+
+    /// Fires every actor against positions after all players have moved.
+    pub(crate) fn fire_combatants(
+        &mut self,
+        level: &Level,
+        hitboxes: &ohl_combat::HitboxIndex,
+        damage_queue: &mut Vec<QueuedDamage>,
+        projectiles: &crate::projectiles::ProjectileSystem,
+        dt: f32,
+    ) -> Vec<(usize, crate::combat::PlayerProjectileCommand)> {
+        let mut commands = Vec::new();
+        if self.winner.is_some() {
+            return commands;
+        }
+        for (index, bot) in self.bots.iter_mut().enumerate() {
+            if bot.alive()
+                && let Some(command) = bot.fire_with_satchels(
+                    level,
+                    hitboxes,
+                    damage_queue,
+                    dt,
+                    projectiles.owned_satchels(bot.entity),
+                )
+            {
                 commands.push((index, command));
             }
         }
         commands
+    }
+
+    pub(crate) fn has_local_human(&self) -> bool {
+        self.local_human
+    }
+
+    pub(crate) fn take_blocked_movers(&mut self, level: &Level) -> Vec<(Entity, Entity)> {
+        let mut blocked = Vec::new();
+        for bot in &mut self.bots {
+            for brush in bot.take_blocked_movers() {
+                if let Some((mover, _)) = level
+                    .brush_collision
+                    .iter()
+                    .find(|(_, attached)| *attached == brush)
+                {
+                    blocked.push((*mover, bot.entity));
+                }
+            }
+        }
+        blocked
+    }
+
+    pub(crate) fn disable_local_human(&mut self) {
+        self.local_human = false;
+        self.human_dead_for = None;
+    }
+
+    pub(crate) fn join_remote(
+        &mut self,
+        level: &mut Level,
+        name: &str,
+        capacity: usize,
+    ) -> Result<usize, crate::deathmatch::DeathmatchError> {
+        if self.bots.iter().filter(|bot| bot.connected()).count() >= capacity || self.is_over() {
+            return Err(crate::deathmatch::DeathmatchError::Full);
+        }
+        let index = self
+            .bots
+            .iter()
+            .position(|bot| !bot.connected())
+            .unwrap_or(self.bots.len());
+        let human = HumanView {
+            entity: level.player,
+            origin: Vec3::ZERO,
+            eye: Vec3::ZERO,
+            alive: false,
+            firing: false,
+        };
+        let spawn = self.pick_spawn(level, human, Some(index + 1));
+        let mut bot = Bot::new(
+            level,
+            u8::try_from(index).map_err(|_| crate::deathmatch::DeathmatchError::Full)?,
+            name,
+            self.config.bot_skill,
+            self.config.seed,
+            &self.models,
+        );
+        bot.enable_remote();
+        bot.respawn(level, spawn);
+        if index == self.bots.len() {
+            self.bots.push(bot);
+            self.tallies.push(Tally::default());
+        } else {
+            self.bots[index] = bot;
+            self.tallies[index + 1] = Tally::default();
+        }
+        Ok(index)
+    }
+
+    pub(crate) fn leave_remote(&mut self, level: &mut Level, index: usize) {
+        if let Some(bot) = self.bots.get_mut(index) {
+            bot.disconnect(level);
+        }
+    }
+
+    pub(crate) fn remote_connected(&self, index: usize) -> bool {
+        self.bots
+            .get(index)
+            .is_some_and(|bot| bot.connected() && bot.is_remote())
+    }
+
+    pub(crate) fn submit_remote(
+        &mut self,
+        index: usize,
+        command: crate::deathmatch::PlayerCommand,
+    ) -> Result<(), crate::deathmatch::DeathmatchError> {
+        self.bots
+            .get_mut(index)
+            .ok_or(crate::deathmatch::DeathmatchError::UnknownPlayer)?
+            .submit_remote(command)
+    }
+
+    pub(crate) fn player_snapshots(
+        &self,
+        session: crate::deathmatch::SessionId,
+        generations: &[u32],
+    ) -> Vec<crate::deathmatch::PlayerSnapshot> {
+        self.bots
+            .iter()
+            .enumerate()
+            .filter(|(_, bot)| bot.connected())
+            .map(|(index, bot)| {
+                let id = crate::deathmatch::PlayerId {
+                    session,
+                    slot: u8::try_from(index).unwrap_or(u8::MAX),
+                    generation: generations[index],
+                };
+                bot.snapshot(
+                    id,
+                    self.tallies[index + 1].frags,
+                    self.tallies[index + 1].deaths,
+                )
+            })
+            .collect()
     }
 
     /// The bot entities, for tests and dev tools.

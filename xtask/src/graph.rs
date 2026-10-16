@@ -21,6 +21,8 @@ pub const COMPOSITION_ROOT: &str = "ohl-app";
 /// as a violation: see [`check_edges`].
 pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-core", &[]),
+    // Documented GoldSrc server queries. No asset, engine or UI access.
+    ("ohl-net", &[]),
     ("ohl-parser-protocol", &["ohl-core"]),
     ("ohl-parser-worker-service", &["ohl-parser-protocol"]),
     ("ohl-parser-worker", &["ohl-parser-worker-service"]),

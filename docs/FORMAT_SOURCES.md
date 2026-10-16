@@ -8872,3 +8872,42 @@ Guarded by `crates/ohl-engine/tests/monster_transform_sync.rs`:
 `a_centred_origin_prop_keeps_its_placement`, and the two existing sync
 tests, which now assert the lift between `Actor` and `Transform` (walking,
 and straight after a save loads).
+
+## Original Half-Life multiplayer protocol research
+
+Reviewed 2026-10-16. [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md) records the
+original-wire compatibility requirement, evidence states, query formats,
+historical handshake outline, unresolved gameplay-channel details, and local
+reference-validation gates. This entry does not establish complete network
+or deathmatch compatibility.
+
+- [Valve Developer Community: Server queries](https://developer.valvesoftware.com/wiki/Server_queries),
+  revision 333666, [archived 2023-08-31](https://web.archive.org/web/20230831123627id_/https://developer.valvesoftware.com/wiki/Server_queries):
+  published prose and packet tables for A2S discovery, challenge handling,
+  typed response fields, and GoldSource query splitting. The current page
+  was inaccessible during this review; the archived article was readable.
+- [Valve Corporation: Server Queries (2004), public prose mirror](https://github.com/rocketsciencegg/qstat/blob/main/info/a2s.txt):
+  the typical UDP listen port and primitive field types cited by `ohl-net`.
+  Contemporary query layouts follow revision 333666 above; this historical
+  document is not an engine implementation source.
+- [GameStat author: Half-Life Protocol](https://int64.org/docs/gamestat-protocols/halflife.html):
+  historical query descriptions and field tables. Its packet dumps are not
+  project fixtures, and its historical forms do not establish modern behavior.
+- [Luigi Auriemma: Half-life fake players bug](https://seclists.org/bugtraq/2002/Jun/254):
+  the author's 2002 prose report of the connectionless challenge/connect
+  exchange. Its attached proof-of-concept was not used.
+- [AlliedModders: Half-Life 1 Engine Messages](https://wiki.alliedmods.net/Half-Life_1_Engine_Messages)
+  and [Game Events](https://wiki.alliedmods.net/Half-Life_1_Game_Events):
+  published message descriptions and field tables; no source-code listings
+  were used. These do not specify the complete sequenced channel.
+- [Valve Steamworks: Distributing Your Dedicated Game Server](https://partner.steamgames.com/doc/sdk/uploading/distributing_gs),
+  [User Authentication and Ownership](https://partner.steamgames.com/doc/features/auth),
+  and [VDC GoldSrc server options](https://developer.valvesoftware.com/wiki/CHILLMODEA/Pages/Command_line_options_%28GoldSrc_Dedicated_Server%29):
+  reference distribution, genuine authentication boundary, and documented
+  launch settings. App-specific setup sources and version examples are
+  linked individually in the protocol ledger.
+
+All implementation must remain independently authored under `CLEAN_ROOM.md`.
+Netchan framing/reliability, channel fragments, byte munging, complete deltas,
+movement checksums, sign-on, and Steam ticket embedding remain evidence gaps.
+Neither a custom Rust protocol nor successful server queries closes them.

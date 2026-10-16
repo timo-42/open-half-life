@@ -7,9 +7,8 @@
 //! - **Single Player**: a new game at a chosen difficulty, a level picked
 //!   chapter by chapter, the Hazard Course, or a saved game.
 //! - **Multiplayer**: an offline skirmish against bots, plus a LAN server
-//!   setup and a LAN game browser. Nothing is networked yet: those two
-//!   panes gather their settings and report [`MenuAction::HostLanServer`]
-//!   and [`MenuAction::JoinLanServer`] so the host can say so.
+//!   setup and an original-protocol LAN server browser. The host performs
+//!   queries; gameplay connections remain a separate integration.
 //! - **Options**: video, audio, controls (with rebindable keys) and
 //!   gameplay settings.
 //!
@@ -26,9 +25,9 @@ mod theme;
 use egui::{Align2, Color32, RichText, Vec2};
 
 pub use multiplayer::{
-    BotSkill, LAN_MAX_PLAYERS_RANGE, LanServerSettings, SKIRMISH_BOTS_DEFAULT, SKIRMISH_BOTS_RANGE,
-    SKIRMISH_FRAG_LIMIT_DEFAULT, SKIRMISH_FRAG_LIMIT_RANGE, SKIRMISH_TIME_LIMIT_DEFAULT_MINUTES,
-    SKIRMISH_TIME_LIMIT_RANGE, skirmish_action,
+    BotSkill, LAN_MAX_PLAYERS_RANGE, LanGame, LanServerSettings, SKIRMISH_BOTS_DEFAULT,
+    SKIRMISH_BOTS_RANGE, SKIRMISH_FRAG_LIMIT_DEFAULT, SKIRMISH_FRAG_LIMIT_RANGE,
+    SKIRMISH_TIME_LIMIT_DEFAULT_MINUTES, SKIRMISH_TIME_LIMIT_RANGE, skirmish_action,
 };
 pub use options::{
     AudioOptions, ControlOptions, DEFAULT_FOV, DisplayMode, DisplaySettings, FOV_RANGE, FPS_LIMITS,
@@ -128,6 +127,13 @@ pub enum MenuAction {
     /// [`Self::HostLanServer`].
     JoinLanServer {
         /// What the player typed, trimmed.
+        address: String,
+    },
+    /// Discover servers with the original Valve connectionless query.
+    RefreshLanServers,
+    /// Inspect a specific server without claiming a gameplay connection.
+    QueryLanServer {
+        /// Numeric address entered by the player; never a console command.
         address: String,
     },
     /// A live setting in [`MenuState::options`] changed (a slider, a
@@ -256,7 +262,7 @@ pub enum MenuPane {
     Skirmish,
     /// The LAN server setup (not networked yet).
     CreateServer,
-    /// The LAN game browser (not networked yet).
+    /// The LAN server query browser.
     LanBrowser,
     /// Video, audio, controls and gameplay options.
     Options,
@@ -338,8 +344,11 @@ pub struct MenuState {
     pub lan_server: LanServerSettings,
     /// The LAN browser's address field.
     pub lan_address: String,
-    /// The egui time the LAN browser's last search started, if any.
-    lan_search_started: Option<f64>,
+    /// Results supplied by the host; names and maps are private display data.
+    pub lan_games: Vec<LanGame>,
+    lan_search_pending: bool,
+    lan_search_completed: bool,
+    lan_search_error: Option<&'static str>,
     notice: Option<Notice>,
     /// Whether a dropdown was open at the end of the last draw.
     popup_open: bool,
@@ -367,7 +376,10 @@ impl Default for MenuState {
             skirmish_time_limit_minutes: SKIRMISH_TIME_LIMIT_DEFAULT_MINUTES,
             lan_server: LanServerSettings::default(),
             lan_address: String::new(),
-            lan_search_started: None,
+            lan_games: Vec::new(),
+            lan_search_pending: false,
+            lan_search_completed: false,
+            lan_search_error: None,
             notice: None,
             popup_open: false,
         }
@@ -375,6 +387,25 @@ impl Default for MenuState {
 }
 
 impl MenuState {
+    /// Marks an actual host-side query pending; no simulated search timer.
+    pub fn begin_lan_search(&mut self) {
+        self.lan_search_pending = true;
+        self.lan_search_error = None;
+    }
+
+    /// Applies a finished host query, including a bounded user-facing error.
+    pub fn complete_lan_search(&mut self, result: Result<Vec<LanGame>, &'static str>) {
+        self.lan_search_pending = false;
+        self.lan_search_completed = true;
+        match result {
+            Ok(games) => {
+                self.lan_games = games.into_iter().take(64).collect();
+                self.lan_search_error = None;
+            }
+            Err(error) => self.lan_search_error = Some(error),
+        }
+    }
+
     /// Creates a menu at its root pane with default options.
     #[must_use]
     pub fn new() -> Self {
@@ -533,7 +564,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut MenuState, data: &MenuData<'_>) -> Ve
                         multiplayer::draw_create_server(ui, state, data, &mut actions);
                     }
                     MenuPane::LanBrowser => {
-                        multiplayer::draw_lan_browser(ui, state, now, &mut actions);
+                        multiplayer::draw_lan_browser(ui, state, &mut actions);
                     }
                     MenuPane::Options => options::draw(ui, state, data, &mut actions),
                 }),
