@@ -8957,7 +8957,7 @@ complete deltas, movement checksums, sign-on and selected-target WON admission
 remain evidence gaps; Steam ticket embedding is a separate historical gap.
 Neither a custom Rust protocol nor successful server queries closes them.
 
-The protocol ledger also records independently reviewed black-box
+The protocol ledger also records historical protocol-48 black-box
 counter/parity comparisons from six controlled official HLDS/HLTV runs and
 one held-out run, with complete-source capture digests and measurement limits.
 These observations are the provenance for experimental prefix tracking only;
@@ -8976,3 +8976,19 @@ the earlier nine phase-selection samples are calibration. The specification
 records complete-source digests, mathematical indexing/inverse rules and
 the unverified tail, direction and extrapolation limits. Public query
 prose is not claimed as the source of these observed functional parameters.
+
+Separate 2026-10-17 protocol-46 Linux base-plus-d-update spectator observations
+support `PrefixProfile::ExperimentalProtocol46Linux3111d` in both directions
+and `WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds` only
+proxy-to-server with first bit 30 clear. Independent review reproduced both
+prefix cohorts and 60 known synthetic texts without fitting the historical
+model. Whole-source hashes, coverage/exclusions and synthesized-relay limits
+are in the protocol ledger; the single coefficient table is unchanged.
+Production-profile replay is post-implementation conformance, not a new
+held-out discovery. Original payloads and recovered strings remain private.
+
+The current ordinary-player gate is `UnclassifiedPreEngineInputDialog`:
+fresh short-C-path/XP64 Wine starts observed no engine/game-client load or
+client protocol and no traffic at the owned observation endpoint. No
+missing-key or missing-data cause is established. This gate supplies no
+authentication, sign-on or gameplay result.

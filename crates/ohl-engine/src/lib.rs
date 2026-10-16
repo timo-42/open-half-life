@@ -5,10 +5,12 @@
 //! [`Game`] owns the renderable [`ohl_world::WorldModel`], the entity
 //! [`ohl_game::Registry`], the map-logic [`ohl_game::Simulation`], the
 //! collision hulls and [`ohl_physics::PlayerController`], and (once a GPU
-//! context is attached) the renderer handles. It exposes exactly two verbs:
+//! context is attached) the renderer handles. Its authority verbs are:
 //! [`Game::tick`] advances a frame from an [`Input`] snapshot and returns
 //! the [`GameEvent`]s the host must act on, and [`Game::render`] draws the
 //! current frame into a caller-supplied target.
+//! [`Game::capture_scene`] and [`Game::render_scene`] separately expose owned,
+//! validated brush/studio presentation without advancing authority systems.
 //!
 //! Every asset this crate needs arrives through the [`AssetSource`] trait,
 //! so a host can back it with an imported payload
@@ -33,6 +35,7 @@ mod map_effects;
 mod pickup_models;
 mod projectiles;
 mod render;
+pub mod scene;
 mod sprites;
 mod start_inventory;
 mod tanks;

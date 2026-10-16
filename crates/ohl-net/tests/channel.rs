@@ -10,6 +10,7 @@ use ohl_net::channel::{
 };
 
 const PROFILE: PrefixProfile = PrefixProfile::ExperimentalProtocol48;
+const PROFILE46: PrefixProfile = PrefixProfile::ExperimentalProtocol46Linux3111d;
 const BIT_30: u32 = 1 << 30;
 const BIT_31: u32 = 1 << 31;
 
@@ -22,7 +23,11 @@ fn packet(first_word: u32, second_word: u32, remainder: &[u8]) -> Vec<u8> {
 }
 
 fn prefix(bytes: &[u8]) -> PacketPrefix<'_> {
-    let DecodedDatagram::Packet(prefix) = decode_datagram(bytes, PROFILE).unwrap() else {
+    prefix_with_profile(PROFILE, bytes)
+}
+
+fn prefix_with_profile(profile: PrefixProfile, bytes: &[u8]) -> PacketPrefix<'_> {
+    let DecodedDatagram::Packet(prefix) = decode_datagram(bytes, profile).unwrap() else {
         panic!("expected synthetic guarded prefix");
     };
     prefix
@@ -399,6 +404,7 @@ fn debug_and_errors_redact_raw_words_and_all_opaque_remainders() {
         format!("{tracker:?}"),
         format!("{state:?}"),
         format!("{:?}", EchoComparison::Matches(state)),
+        format!("{:?}", EchoComparison::ProfileMismatch),
         format!(
             "{:?}",
             EchoComparison::Mismatch {
@@ -435,8 +441,119 @@ fn debug_and_errors_redact_raw_words_and_all_opaque_remainders() {
         ChannelError::EchoCounterGuard,
         ChannelError::ConnectionlessDatagram,
         ChannelError::SplitDatagram,
+        ChannelError::ProfileMismatch,
     ] {
         assert!(!format!("{error:?}").contains("SECRET"));
         assert!(!format!("{error}").contains("SECRET"));
+    }
+}
+
+#[test]
+fn protocol46_prefix_keeps_explicit_identity_guards_and_opaque_flags() {
+    let maximum = EXPERIMENTAL_COUNTER_LIMIT - 1;
+    for first_flags in [0, BIT_30, BIT_31, BIT_30 | BIT_31] {
+        for second_flags in [0, BIT_30, BIT_31, BIT_30 | BIT_31] {
+            let bytes = packet(maximum | first_flags, maximum | second_flags, b"SYNTHETIC");
+            let selected = prefix_with_profile(PROFILE46, &bytes);
+            assert_eq!(selected.profile(), PROFILE46);
+            assert_ne!(selected.profile(), prefix(&bytes).profile());
+            assert_eq!(selected.raw_words(), prefix(&bytes).raw_words());
+            assert_eq!(selected.first_counter(), maximum);
+            assert_eq!(selected.echoed_counter(), maximum);
+            assert_eq!(selected.first_bit_30(), first_flags & BIT_30 != 0);
+            assert_eq!(selected.second_bit_30(), second_flags & BIT_30 != 0);
+            assert_eq!(selected.first_bit_31(), first_flags & BIT_31 != 0);
+            assert_eq!(selected.echoed_bit_31(), second_flags & BIT_31 != 0);
+            assert_eq!(selected.unvalidated_remainder().as_bytes(), b"SYNTHETIC");
+        }
+    }
+    for (first, second, error) in [
+        (
+            EXPERIMENTAL_COUNTER_LIMIT,
+            0,
+            ChannelError::FirstCounterGuard,
+        ),
+        (
+            0,
+            EXPERIMENTAL_COUNTER_LIMIT,
+            ChannelError::EchoCounterGuard,
+        ),
+    ] {
+        assert_eq!(
+            decode_datagram(&packet(first, second, &[]), PROFILE46).unwrap_err(),
+            error
+        );
+    }
+    assert_eq!(
+        decode_datagram(&[0; OBSERVED_PREFIX_BYTES - 1], PROFILE46).unwrap_err(),
+        ChannelError::TruncatedPrefix
+    );
+    assert_eq!(
+        decode_datagram(&vec![0; MAX_CHANNEL_DATAGRAM_BYTES + 1], PROFILE46).unwrap_err(),
+        ChannelError::DatagramLimit
+    );
+    for marker in [[0xFF; 4], [0xFE, 0xFF, 0xFF, 0xFF]] {
+        assert_eq!(
+            decode_datagram(&marker, PROFILE46),
+            decode_datagram(&marker, PROFILE)
+        );
+    }
+}
+
+#[test]
+fn cross_profile_prefix_observation_preserves_empty_and_populated_tracker_history() {
+    for (own, other) in [(PROFILE46, PROFILE), (PROFILE, PROFILE46)] {
+        for populated in [false, true] {
+            let mut tracker = ReceiveTracker::new(own);
+            if populated {
+                let bytes = packet(9 | BIT_31, 0, &[]);
+                advanced(tracker.observe_datagram(&bytes).unwrap());
+            }
+            let before = tracker.clone();
+            for counter in [3, 9, 20] {
+                let bytes = packet(counter | BIT_31, 0, b"FOREIGN_SYNTHETIC");
+                let foreign = prefix_with_profile(other, &bytes);
+                assert_eq!(
+                    tracker.observe_prefix(foreign),
+                    Err(ChannelError::ProfileMismatch)
+                );
+                assert_eq!(tracker, before);
+            }
+            let bytes = packet(0x000B | BIT_31, 0, &[]);
+            let observation = tracker
+                .observe_prefix(prefix_with_profile(own, &bytes))
+                .unwrap();
+            assert_eq!(observation.prefix().profile(), own);
+            assert_eq!(advanced(observation).parity(), !populated);
+            assert_eq!(tracker.retained_states(), usize::from(populated) + 1);
+        }
+    }
+}
+
+#[test]
+fn cross_profile_echoes_cannot_match_even_with_matching_counters_and_parity() {
+    for (own, other) in [(PROFILE46, PROFILE), (PROFILE, PROFILE46)] {
+        let mut tracker = ReceiveTracker::new(own);
+        let bytes = packet(9 | BIT_31, 0, &[]);
+        let state = advanced(tracker.observe_datagram(&bytes).unwrap());
+        let before = tracker.clone();
+        let mut same = ReceiveTracker::new(own);
+        let bytes = packet(20, 9 | BIT_31, &[]);
+        let matching = same.observe_datagram(&bytes).unwrap();
+        assert_eq!(
+            tracker.compare_echo(&matching),
+            EchoComparison::Matches(state)
+        );
+
+        let mut foreign = ReceiveTracker::new(other);
+        for counter in [20, 20, 19] {
+            let bytes = packet(counter, 9 | BIT_31, &[]);
+            let observation = foreign.observe_datagram(&bytes).unwrap();
+            assert_eq!(
+                tracker.compare_echo(&observation),
+                EchoComparison::ProfileMismatch
+            );
+            assert_eq!(tracker, before);
+        }
     }
 }

@@ -1,6 +1,7 @@
-# Experimental protocol-48 full-word transform
+# Experimental full-word transform profiles
 
-Reviewed 2026-10-16. This is an independently authored mathematical model
+Reviewed 2026-10-16; separate protocol-46 cohort accepted 2026-10-17.
+This is an independently authored mathematical model
 from controlled black-box experiments using project-authored synthetic
 command text. It describes a bounded word operation, not a complete GoldSrc
 channel or a playable client. The [protocol ledger](GOLDSRC_PROTOCOL.md)
@@ -8,13 +9,16 @@ records the broader compatibility requirement and remaining gates.
 
 ## Reference and supported scope
 
-The reference pair was the separately downloaded official Steam app 90
-HLDS/HLTV distribution, build ID **15961496**, advertising protocol **48**,
+The historical reference pair was the separately downloaded official Steam
+app-90 HLDS/HLTV distribution, build ID **15961496**, advertising protocol **48**,
 observed on 2026-10-16. The build ID identifies the distribution, not a
 GoldSrc engine build number. Reviewed whole launcher/executable digests
 identify those files only; they do not fingerprint every dynamically loaded
 runtime component. Do not generalize these observations to retail/WON or
 every server advertising protocol 48. The user's ISO remained unexecuted.
+The separately measured protocol-46 cohort below has its own profile and
+uses the unchanged mathematical operation; these historical observations
+are not evidence for the user's selected pre-Steam target.
 
 The measured direction is the official spectator proxy to its server, for
 ordinary selected packets with first-word bit 30 clear. The experimental
@@ -91,9 +95,16 @@ operation does not identify svc boundaries, decode a whole channel payload,
 send packets or authenticate a peer. Its output must not automatically enter
 the server-message reader.
 
-The `ohl-net::word_transform` API requires
-`WordTransformProfile::ExperimentalProtocol48HltvToHlds` and a guarded
-`PacketPrefix`. `decode_full_words` writes only complete candidate words into
+The `ohl-net::word_transform` API requires an explicit word profile and a
+`PacketPrefix` from its matching prefix profile:
+
+| Prefix profile | Word profile |
+| --- | --- |
+| `ExperimentalProtocol48` | `ExperimentalProtocol48HltvToHlds` |
+| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHltvToHlds` |
+
+`WordTransformError::ProfileMismatch` rejects a foreign prefix before output
+changes. `decode_full_words` writes only complete candidate words into
 caller storage and returns them separately from `OpaqueTail` borrowed from
 the original input. `encode_full_words` returns encoded full words only;
 its input length is independent of the prefix's old remainder length.
@@ -103,14 +114,15 @@ partial-word errors are explicit. Byte-wrapper Debug output is redacted.
 Second-word bit 30 and both bit-31 flags are not key inputs; this assigns
 them no transform or channel meaning.
 
-Applying the candidate operation to absolute offsets 8 through 23, higher
-counters, other low-counter bytes, longer bodies and further repetitions of
-the period is inferred model applicability. The measured synthetic-text
+Applying the candidate operation to initial offsets 8 through 23 for the
+historical protocol-48 cohort, or 8 through 13 for protocol 46, extrapolates
+measured known text. Higher counters, other low-counter bytes, longer bodies
+and further period repetitions are also inferred applicability. Synthetic-text
 windows do not verify every byte range to which a generic word operation
 can be applied. In particular, the bytes immediately after the selected
 prefix may include additional header or framing data.
 
-## Derivation and validation provenance
+## Historical protocol-48 derivation and validation
 
 The coordinator inferred the permutation, counter-byte dependence and
 position masks numerically using only known project-authored synthetic
@@ -179,7 +191,7 @@ The complete repaired capture SHA-256 is
 This is a bounded correlation consistent with the candidate model; it does
 not prove endpoint command consumption or complete plaintext semantics.
 
-## Rust implementation checks
+## Historical protocol-48 Rust implementation checks
 
 The final locked `ohl-net` run passed 65 tests: 13 new synthetic word-codec
 tests plus the prior 52 query/prefix/message tests. One explicit original
@@ -197,6 +209,32 @@ model, all 60 known synthetic texts, and all 60 inverse encoded-word buffers.
 Sixty tail-preservation and sixty output-sentinel checks passed. These check
 the bounded buffer contract; they do not validate tail plaintext. No capture
 or recovered message was added to the Rust fixtures or automatic test suite.
+
+## Separate protocol-46 cohort
+
+The 2026-10-17 Linux HLDS 3.1.1.1 base-plus-d-update spectator reference
+reported native version 3.1.1.1/protocol 46, without a confirmed build.
+[The protocol ledger](GOLDSRC_PROTOCOL.md#protocol-46-spectator-packet-cohorts)
+records its distribution hashes, baseline and synthetic-run capture digests,
+warnings and relay limits. Both spectator directions support only the
+selected prefix model; the word profile covers proxy-to-server packets
+with first bit 30 clear.
+
+The existing frozen model matched 60/60 unique authored texts, lengths
+96..103, totaling 5,962 known bytes at 60 distinct low-counter bytes. All
+16 mask slots had fully known complete words; each packet/text length
+residue had 15 samples. Known text began at absolute UDP offset 14 and ended
+at offsets 110..117 exclusive. Two earlier command-sized candidates were
+excluded. No low-byte decrease or known text in a partial tail was observed.
+No coefficients were fitted, and the sole implementation table is unchanged.
+
+The explicit protocol-46 production-profile replay matched all 60 known
+texts/5,962 bytes and passed 60 inverse-region, 60 output-sentinel and
+60 opaque-tail preservation checks. This is post-implementation conformance
+to the frozen hypothesis, not independent held-out discovery or tail
+plaintext verification. The focused locked crate run passed 111 tests with
+one reference test ignored, including six new synthetic profile/association
+tests; strict crate Clippy, targeted formatting and diff checks passed.
 
 ## Clean-room and compatibility boundary
 

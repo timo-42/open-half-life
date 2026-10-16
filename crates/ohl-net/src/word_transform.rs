@@ -1,7 +1,10 @@
 //! Experimental complete-word transform from reviewed synthetic observations.
 //!
-//! The caller explicitly selects the profile observed on 2026-10-16 between the
-//! official protocol-48 HLTV proxy and HLDS, app 90, build 15961496. Only the
+//! The caller explicitly selects the dated reference cohort. The protocol-48
+//! profile was observed on 2026-10-16 between official HLTV and HLDS, app 90,
+//! build 15961496. The separate protocol-46 profile uses the Linux 3.1.1.1 base
+//! plus d-update spectator cohort observed 2026-10-17; native output reported
+//! protocol 46/version 3.1.1.1 without an exact build. Only the
 //! proxy-to-server direction with first-word bit 30 clear was tested. This is
 //! not a server-to-client transform, a complete header, a message boundary, an
 //! authenticated channel, or evidence of ordinary-player interoperability.
@@ -14,8 +17,17 @@
 //! synthetic texts of 96 through 103 bytes at 57 distinct low-counter bytes.
 //! The tests below the module boundary use independently authored data only.
 //!
-//! Operations on initial word positions 8 through 23, higher guarded counters,
-//! all other key bytes, and longer period repetitions extrapolate that model.
+//! Without fitting, the same frozen model matched 60/60 new protocol-46
+//! synthetic texts (5,962 known bytes, 96..103 bytes/text, 60 distinct key bytes
+//! and all 16 fully known mask positions). Two earlier command-sized candidates
+//! were excluded. Complete-capture SHA-256 is
+//! `711e5f5fce9d2a9cc3432332f2aa7408716dd83fa543e7214813fcb01e29da2c`.
+//! Known text occupied absolute UDP offsets 14 through 116 at most; no known
+//! text entered a partial-word tail. This is a synthesized-envelope application
+//! relay observation, not NIC acquisition or evidence for every protocol-46 peer.
+//!
+//! Initial offsets 8..23 for protocol 48 and 8..13 for protocol 46, higher
+//! guarded counters, other key bytes and longer periods extrapolate the model.
 //! The 1400-byte datagram cap and counter guard are project bounds. They do not
 //! establish compatibility throughout those ranges. Incomplete final words
 //! were not validated with held-out known text and remain explicitly opaque.
@@ -30,7 +42,9 @@
 
 use std::fmt;
 
-use crate::channel::{MAX_CHANNEL_DATAGRAM_BYTES, OBSERVED_PREFIX_BYTES, PacketPrefix};
+use crate::channel::{
+    MAX_CHANNEL_DATAGRAM_BYTES, OBSERVED_PREFIX_BYTES, PacketPrefix, PrefixProfile,
+};
 
 /// Maximum complete-word bytes after the selected prefix, a project bound.
 pub const MAX_FULL_WORD_BYTES: usize = MAX_CHANNEL_DATAGRAM_BYTES - OBSERVED_PREFIX_BYTES;
@@ -62,6 +76,9 @@ const POSITION_MASKS: [[u8; WORD_BYTES]; POSITION_PERIOD / WORD_BYTES] = [
 pub enum WordTransformProfile {
     /// Official HLTV-to-HLDS, protocol 48, observed 2026-10-16; app 90/build 15961496.
     ExperimentalProtocol48HltvToHlds,
+    /// Linux base plus d-update HLTV-to-HLDS cohort, observed 2026-10-17.
+    /// Protocol 46/native version 3.1.1.1; not a normal-player or server direction.
+    ExperimentalProtocol46Linux3111dHltvToHlds,
 }
 
 /// Complete transformed words, with explicit byte access and redacted Debug.
@@ -144,6 +161,7 @@ pub enum WordTransformError {
     OutputTooSmall,
     PartialWordInput,
     DatagramLimit,
+    ProfileMismatch,
 }
 
 impl fmt::Display for WordTransformError {
@@ -153,6 +171,7 @@ impl fmt::Display for WordTransformError {
             Self::OutputTooSmall => "experimental word output buffer is too small",
             Self::PartialWordInput => "experimental word encoding requires complete words",
             Self::DatagramLimit => "experimental word datagram limit exceeded",
+            Self::ProfileMismatch => "experimental word and prefix profiles do not match",
         })
     }
 }
@@ -163,17 +182,23 @@ fn validate_context(
     profile: WordTransformProfile,
     prefix: PacketPrefix<'_>,
 ) -> Result<u8, WordTransformError> {
-    match profile {
+    let expected_prefix = match profile {
         WordTransformProfile::ExperimentalProtocol48HltvToHlds => {
-            if prefix.first_bit_30() {
-                return Err(WordTransformError::FirstBit30Set);
-            }
-            // PacketPrefix construction already enforces the shared datagram
-            // and both candidate-counter guards. Bit 31 and second-word bit 30
-            // are preserved by its owner; neither participates in this key.
-            Ok(prefix.first_counter().to_le_bytes()[0])
+            PrefixProfile::ExperimentalProtocol48
         }
+        WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds => {
+            PrefixProfile::ExperimentalProtocol46Linux3111d
+        }
+    };
+    if prefix.profile() != expected_prefix {
+        return Err(WordTransformError::ProfileMismatch);
     }
+    if prefix.first_bit_30() {
+        return Err(WordTransformError::FirstBit30Set);
+    }
+    // PacketPrefix construction already enforces the shared datagram and both
+    // candidate-counter guards. Bit 31 and second-word bit 30 do not key words.
+    Ok(prefix.first_counter().to_le_bytes()[0])
 }
 
 /// Decode complete words after the selected prefix into caller-owned output.
@@ -183,6 +208,7 @@ fn validate_context(
 /// 30 or either bit 31. The original prefix and tail are never written to output.
 /// Trailing bytes remain borrowed, opaque and separate. Errors preserve all
 /// output bytes, and success writes only the returned complete-word region.
+/// The prefix must belong to the selected word profile's observation cohort.
 pub fn decode_full_words<'output, 'packet>(
     profile: WordTransformProfile,
     prefix: PacketPrefix<'packet>,
@@ -223,6 +249,7 @@ pub fn decode_full_words<'output, 'packet>(
 /// be a multiple of four bytes and fit after the selected prefix within the
 /// shared datagram cap. No partial tail or padding is accepted. Errors preserve
 /// all output bytes; success writes exactly the returned encoded-word region.
+/// The prefix must belong to the selected word profile's observation cohort.
 pub fn encode_full_words<'output>(
     profile: WordTransformProfile,
     prefix_context: PacketPrefix<'_>,

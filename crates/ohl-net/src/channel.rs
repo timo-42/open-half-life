@@ -1,7 +1,8 @@
-//! Experimental protocol-48 prefix observations, not a complete network channel.
+//! Explicit experimental prefix cohorts, not a complete network channel.
 //!
-//! The selected eight-byte view contains two little-endian words at offsets 0
-//! and 4. An independently reviewed black-box model accepted strictly increasing
+//! For the historical protocol-48 cohort, the selected eight-byte view contains
+//! two little-endian words at offsets 0 and 4. An independently reviewed model
+//! accepted strictly increasing
 //! first candidate counters. First-word bit 31 toggled an initially false state
 //! only on accepted advances. At the exact accepted counter referenced by an
 //! opposite accepted packet's second word, that state matched second-word bit
@@ -11,9 +12,20 @@
 //! inversion per run/direction. See the repository's `docs/GOLDSRC_PROTOCOL.md`
 //! experimental packet-prefix evidence subsection for the reviewed evidence.
 //!
+//! A separate 2026-10-17 Linux HLDS 3.1.1.1 base plus d-update spectator
+//! cohort reported protocol 46 and native version 3.1.1.1. The unchanged
+//! candidate matched 733/733 and 708/708 eligible echoes in its two runs;
+//! one unseen initial reference per run was excluded. Both spectator directions
+//! were measured. Complete-capture SHA-256 values are
+//! `ed6097fd53b796c2d4fff8502a1dcb4af6b62817216d0efbfbc7a970b2e84471`
+//! and `711e5f5fce9d2a9cc3432332f2aa7408716dd83fa543e7214813fcb01e29da2c`.
+//! These are application-relay observations with synthesized envelopes and
+//! timestamps, not NIC acquisition or proof for all protocol-46 implementations.
+//! Profile identities remain distinct even where their candidate rules agree.
+//!
 //! Both candidate counters use a low-30-bit projection, with bit 30 retained
 //! separately as opaque. The observations do not distinguish 29 from 30 counter
-//! bits, so this profile rejects either projected counter at or above 2^29.
+//! bits, so both profiles reject either projected counter at or above 2^29.
 //! This is a conservative project guard, not a conclusion about actual counter
 //! width. Wrap, resets, stream association, packet authentication, fragment
 //! layout, reliable delivery, transforms, and any header extent beyond this
@@ -56,6 +68,9 @@ const MARKER_BIT_31: u32 = 1 << 31;
 pub enum PrefixProfile {
     /// Reviewed protocol-48 prefix model with a conservative counter guard.
     ExperimentalProtocol48,
+    /// Linux 3.1.1.1 base plus d-update spectator cohort, observed 2026-10-17.
+    /// Native output reported protocol 46/version 3.1.1.1, not an exact build.
+    ExperimentalProtocol46Linux3111d,
 }
 
 /// Borrowed opaque bytes whose automatic Debug representation is redacted.
@@ -166,6 +181,7 @@ pub enum ChannelError {
     EchoCounterGuard,
     ConnectionlessDatagram,
     SplitDatagram,
+    ProfileMismatch,
 }
 
 impl fmt::Display for ChannelError {
@@ -177,6 +193,7 @@ impl fmt::Display for ChannelError {
             Self::EchoCounterGuard => "experimental echo-counter guard exceeded",
             Self::ConnectionlessDatagram => "connectionless datagram is outside receive tracking",
             Self::SplitDatagram => "split datagram is outside receive tracking",
+            Self::ProfileMismatch => "experimental packet prefix profile mismatch",
         })
     }
 }
@@ -204,7 +221,7 @@ pub fn decode_datagram(
         return Ok(DecodedDatagram::Split(OpaqueRemainder(&datagram[4..])));
     }
     match profile {
-        PrefixProfile::ExperimentalProtocol48 => {
+        PrefixProfile::ExperimentalProtocol48 | PrefixProfile::ExperimentalProtocol46Linux3111d => {
             let prefix = datagram
                 .get(..OBSERVED_PREFIX_BYTES)
                 .ok_or(ChannelError::TruncatedPrefix)?;
@@ -291,6 +308,8 @@ pub enum EchoComparison {
     },
     /// Duplicate/stale opposite observations do not contribute echo evidence.
     NotAdvanced,
+    /// The opposite observation belongs to a different caller-selected cohort.
+    ProfileMismatch,
 }
 
 impl fmt::Debug for EchoComparison {
@@ -300,6 +319,7 @@ impl fmt::Debug for EchoComparison {
             Self::Mismatch { .. } => "Mismatch { .. }",
             Self::Unobserved { .. } => "Unobserved { .. }",
             Self::NotAdvanced => "NotAdvanced",
+            Self::ProfileMismatch => "ProfileMismatch",
         })
     }
 }
@@ -356,14 +376,21 @@ impl ReceiveTracker {
         datagram: &'a [u8],
     ) -> Result<ReceiveObservation<'a>, ChannelError> {
         match decode_datagram(datagram, self.profile)? {
-            DecodedDatagram::Packet(prefix) => Ok(self.observe_prefix(prefix)),
+            DecodedDatagram::Packet(prefix) => self.observe_prefix(prefix),
             DecodedDatagram::Connectionless(_) => Err(ChannelError::ConnectionlessDatagram),
             DecodedDatagram::Split(_) => Err(ChannelError::SplitDatagram),
         }
     }
 
     /// Apply only the high-water/toggle policy to an already guarded prefix.
-    pub fn observe_prefix<'a>(&mut self, prefix: PacketPrefix<'a>) -> ReceiveObservation<'a> {
+    /// A different profile is rejected before any state or history mutation.
+    pub fn observe_prefix<'a>(
+        &mut self,
+        prefix: PacketPrefix<'a>,
+    ) -> Result<ReceiveObservation<'a>, ChannelError> {
+        if prefix.profile() != self.profile {
+            return Err(ChannelError::ProfileMismatch);
+        }
         let counter = prefix.first_counter();
         let disposition = match self.state {
             Some(state) if counter == state.counter => ReceiveDisposition::Duplicate,
@@ -381,10 +408,10 @@ impl ReceiveTracker {
                 ReceiveDisposition::Advanced(state)
             }
         };
-        ReceiveObservation {
+        Ok(ReceiveObservation {
             prefix,
             disposition,
-        }
+        })
     }
 
     /// Compare an accepted observation from the opposite associated direction.
@@ -392,7 +419,11 @@ impl ReceiveTracker {
     /// The caller supplies the direction/stream association. Only an exact
     /// retained first-counter state is used; never the latest arrival's state.
     /// This function is diagnostic and does not accept/reject or mutate packets.
+    /// Different-profile observations are rejected even when not advanced.
     pub fn compare_echo(&self, opposite: &ReceiveObservation<'_>) -> EchoComparison {
+        if opposite.prefix.profile() != self.profile {
+            return EchoComparison::ProfileMismatch;
+        }
         if !matches!(opposite.disposition, ReceiveDisposition::Advanced(_)) {
             return EchoComparison::NotAdvanced;
         }

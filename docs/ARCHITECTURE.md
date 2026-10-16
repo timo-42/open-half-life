@@ -45,8 +45,11 @@ values and text remains borrowed opaque bytes. Unsupported, malformed and
 over-budget messages stop the reader without resynchronization; commands
 are never executed. Debug output redacts text, hashes and map fingerprints.
 A separate `ohl-net::channel::ReceiveTracker`, selected with
-`PrefixProfile::ExperimentalProtocol48`, follows bounded counter/parity
-observations from the official loopback spectator reference. Its eight-byte
+`PrefixProfile::ExperimentalProtocol46Linux3111d` or the distinct historical
+`ExperimentalProtocol48`, follows bounded spectator counter/parity
+observations. `observe_prefix` returns `Result` and rejects a different
+profile before state/history changes; `compare_echo` reports
+`EchoComparison::ProfileMismatch` for a foreign observation. Its eight-byte
 prefix view and 512-state history are bounded separately from the datagram's
 unvalidated remainder. It does not establish reliable-channel semantics or
 feed its opaque remainder to this payload reader. Both interfaces remain
@@ -55,14 +58,23 @@ and the authoritative adapter.
 
 `ohl-net::word_transform` is a separate experimental complete-word operation
 with a fixed mathematical model derived from synthetic-text black-box
-experiments. Its explicit `ExperimentalProtocol48HltvToHlds` profile requires
-the guarded proxy-to-server prefix with first bit 30 clear, returns
+experiments. Explicit `ExperimentalProtocol46Linux3111dHltvToHlds` and
+historical `ExperimentalProtocol48HltvToHlds` profiles share one unchanged
+coefficient table. Each requires its matching prefix profile and first bit
+30 clear; a mismatch fails before output changes. The operation returns
 candidate decoded words separately from an opaque original tail and rejects
 partial-word encoding. It constructs no prefix,
 does not send packets and does not feed the message reader. The
 [mathematical specification](GOLDSRC_TRANSFORM.md) distinguishes measured
 coverage from inferred use at other offsets/counters and leaves tail and
 other-direction semantics open.
+
+The ordinary-player reference remains gated by
+`UnclassifiedPreEngineInputDialog` after fresh short-C-path/XP64 Wine starts.
+No engine/game-client load or client protocol was observed; no traffic
+reached the owned observation endpoint. A missing-key or missing-data cause
+is unestablished. All four gameplay pairings and the player sign-on milestone
+remain pending.
 
 `ohl-engine::deathmatch::Deathmatch` is a separate authoritative gameplay
 adapter over the existing skirmish simulation. It has no socket or dependency
@@ -84,6 +96,29 @@ checksums, prediction, and authentication have not been implemented. The public
 evidence and compatibility gates are in
 [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md). A successful server query and
 synthetic multi-human combat test establish separate, bounded results.
+
+[`ohl-engine::scene`](../crates/ohl-engine/src/scene.rs) now supplies an owned
+brush/studio/held-model presentation slice through `Game::scene_catalog`,
+`capture_scene` and `render_scene`. Immutable `SceneFrame` candidates contain
+effective brush placement and sampled studio/held poses. `SceneReplica::apply`
+validates the complete candidate before full replacement; absent supported
+records disappear, and rejected frames preserve the previous frame. Checks
+include catalog/epoch association, generational local identities, freshness,
+finite state and pose layout. Project caps are 4,096 instances including
+held models, 262,144 bones per frame and 128 body-selection entries per
+studio/held record; hosts may lower the instance/bone budgets.
+
+Each resource load/revision has a unique catalog association, even for
+identical independent loads. Host epochs and local IDs are not wire IDs;
+a future adapter must explicitly map wire entities/resources into the
+receiver's catalog. CPU capture needs no GPU and advances no authority,
+clock or animation state. Ordinary drawing shares collectors/resources and
+moves owned sampled poses into draw instances. `render_scene` uses the
+accepted slice while other passes retain the Game's existing presentation
+state. Sprites, lightstyles, HUD/inventory, audio, transient effects, dynamic
+collision, world-wire mapping and prediction remain outside this slice.
+Automatic Debug/errors redact identities, resource handles and poses. No
+network replication, full remote client or gameplay CLI is added.
 
 Open Half-Life is a Rust workspace split into narrow crates under `crates/`.
 Dependencies point from high-level orchestration toward low-level services;

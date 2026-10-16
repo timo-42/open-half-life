@@ -15,6 +15,7 @@ use crate::input::Input;
 use crate::level::Level;
 use crate::render::{RenderTarget, Renderers};
 use crate::save::{EngineHeader, GameSave, ViewState};
+use crate::scene::{SceneCatalog, SceneEpoch, SceneError, SceneFrame, SceneReplica};
 use crate::systems::{Systems, SystemsConfig};
 use crate::text::{MessageBlock, SentenceLookup, TitleLibrary, load_skill_table};
 use crate::tick::{TICK_SECONDS, TickClock};
@@ -140,6 +141,7 @@ impl GameConfig {
 /// One loaded level plus everything that acts on it.
 pub struct Game {
     level: Level,
+    scene_catalog: SceneCatalog,
     camera: FreeFlyCamera,
     controller: PlayerController,
     light_styles: LightStyles,
@@ -248,6 +250,7 @@ impl Game {
         if self.level.collision.is_none() || crate::skirmish::spawn_points(&self.level).is_empty() {
             return Err(EngineError::NoSpawnPoints);
         }
+        let previous_studio_count = self.level.studio_models.len();
         let player = self
             .level
             .load_extra_studio_model(source, crate::skirmish::PLAYER_MODEL_PATH);
@@ -269,6 +272,9 @@ impl Game {
         // A model slot added after the renderers were built has no GPU
         // resources yet; the next `render` rebuilds them.
         self.renderers = None;
+        if self.level.studio_models.len() != previous_studio_count {
+            self.scene_catalog = SceneCatalog::from_level(&self.level);
+        }
         self.systems.start_skirmish(
             &mut self.level,
             &mut self.camera,
@@ -384,8 +390,10 @@ impl Game {
         let mut systems = Systems::new(SystemsConfig::default());
         systems.ai_mut().set_sentence_lookup(sentences.clone());
         systems.attach_level(&mut level, config.difficulty, &skill);
+        let scene_catalog = SceneCatalog::from_level(&level);
         Self {
             level,
+            scene_catalog,
             camera,
             controller,
             light_styles: LightStyles::new(),
@@ -1687,6 +1695,7 @@ impl Game {
         globals.seed_from(&next.registry);
 
         self.level = next;
+        self.scene_catalog = SceneCatalog::from_level(&self.level);
         self.camera = self
             .level
             .spawn
@@ -2296,6 +2305,46 @@ impl Game {
             .map_or_else(Default::default, Renderers::resource_stats)
     }
 
+    /// This resource load/revision's explicit local presentation association.
+    /// Level changes and appended model resources replace the association;
+    /// callers then obtain a new catalog and create a new presentation replica.
+    pub fn scene_catalog(&self) -> &SceneCatalog {
+        &self.scene_catalog
+    }
+
+    /// Own the current effective brush/studio presentation without ticking.
+    /// The stamp is the existing fixed-step count and elapsed simulation time.
+    /// Missing/invalid loaded model resources are omitted as in ordinary drawing;
+    /// GPU availability never affects capture.
+    pub fn capture_scene(&self, epoch: SceneEpoch) -> std::result::Result<SceneFrame, SceneError> {
+        crate::scene::capture(
+            &self.level,
+            &self.scene_catalog,
+            epoch,
+            self.systems.deathmatch_tick_count(),
+            self.elapsed,
+        )
+    }
+
+    /// Draw an accepted presentation replica using this catalog's resources.
+    /// The camera belongs to the host; no controller, clocks, AI, inventory,
+    /// physics or RNG are advanced or overwritten. Other render passes retain
+    /// this Game's existing presentation state; they are outside this first slice.
+    pub fn render_scene(
+        &mut self,
+        context: &GpuContext,
+        target: RenderTarget<'_>,
+        replica: &SceneReplica,
+        camera: &FreeFlyCamera,
+    ) -> std::result::Result<(), SceneError> {
+        let frame = replica.frame().ok_or(SceneError::NoFrame)?;
+        if frame.catalog() != &self.scene_catalog {
+            return Err(SceneError::WrongCatalog);
+        }
+        self.render_frame(context, target, *camera, Some(frame))
+            .map_err(|_| SceneError::Renderer)
+    }
+
     /// Draws the current frame into `target`, creating the GPU resources
     /// on first use.
     ///
@@ -2303,13 +2352,28 @@ impl Game {
     /// [`crate::EngineError::Renderer`] when a GPU resource for this level
     /// could not be created.
     pub fn render(&mut self, context: &GpuContext, target: RenderTarget<'_>) -> Result<()> {
+        self.render_frame(context, target, self.camera, None)
+    }
+
+    fn render_frame(
+        &mut self,
+        context: &GpuContext,
+        target: RenderTarget<'_>,
+        camera: FreeFlyCamera,
+        scene: Option<&SceneFrame>,
+    ) -> Result<()> {
         if self.renderers.is_none() {
-            self.renderers = Some(Renderers::new(context, &self.level, target.format)?);
+            self.renderers = Some(Renderers::new(
+                context,
+                &self.level,
+                target.format,
+                &self.scene_catalog,
+            )?);
         }
         let Some(renderers) = self.renderers.as_mut() else {
             return Err(EngineError::Renderer);
         };
-        let effect_view = self.systems.map_effects.view_camera(&self.camera);
+        let effect_view = self.systems.map_effects.view_camera(&camera);
         let effects = self.systems.map_effects.presentation();
         let view_model = crate::viewmodel::build_frame(
             &self.level,
@@ -2328,6 +2392,7 @@ impl Game {
             self.systems.transient_sprites().as_slice(),
             &effects,
             self.systems.tanks.laser_pulses(),
+            scene,
         );
         Ok(())
     }

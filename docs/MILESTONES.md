@@ -9855,3 +9855,70 @@ launcher startup observed matching support-module origins. No engine load,
 client UDP, authentication or player sign-on is established. The next
 ordinary-player active/spawned baseline and both original/Rust cross-pairings
 remain open; historical protocol-48 observations are not substituted for them.
+
+### Explicit protocol-46 packet cohorts
+
+The separate Linux base-plus-d-update spectator reference produced 740 and
+715 equal relay pairs in two bounded runs, with 733/733 and 708/708 eligible
+prefix-echo matches and one unseen initial reference excluded per run.
+Both processes exited 0 and were stopped after each run; proxy diagnostics
+retained one loader-category and two other error indicators per run.
+[The ledger](GOLDSRC_PROTOCOL.md#protocol-46-spectator-packet-cohorts) records
+whole-capture hashes and the synthesized-envelope/timestamp limits.
+
+The unchanged frozen word model matched 60 unique synthetic texts of
+96..103 bytes, totaling 5,962 known bytes across 60 low-counter bytes and
+16 fully known word-mask slots. Packet/text residues had 15 samples each;
+two earlier command-sized candidates were excluded. No low-byte decrease
+or known text inside a partial-word tail was observed. This measures only
+proxy-to-server clear-bit-30 word behavior; prefix observations cover both
+spectator directions. It proves no complete header, fragmentation,
+reliability, sign-on or ordinary-player interoperability.
+
+Explicit `ExperimentalProtocol46Linux3111d` prefix and
+`ExperimentalProtocol46Linux3111dHltvToHlds` word profiles retain separate
+historical protocol-48 selectors and one unchanged coefficient table.
+Cross-profile tracker, echo and word operations reject before state/output
+changes. Production-profile replay passed 708 eligible echoes, 60 known
+texts and 60 inverse/sentinel/opaque-tail checks as post-implementation
+conformance, without fitting. Six new synthetic tests bring focused locked
+`ohl-net` results to 111 passed and one ignored; strict crate Clippy,
+targeted formatting and diff checks passed. Earlier workspace totals retain
+their checkpoint scope.
+
+The player reference gate is now `UnclassifiedPreEngineInputDialog` after
+two fresh short-C-path starts, including Wine's XP64 setting, with unchanged
+staged hashes.
+No engine/game-client load or client protocol was observed, and no traffic
+reached the owned observation endpoint. No missing-key/data cause is
+established, and no installer or ISO code/scripts were executed. All four
+ordinary-player pairings remain pending; the CLI remains query-only.
+
+### Owned brush/studio presentation slice
+
+The accepted engine slice adds `Game::scene_catalog`, `capture_scene` and
+`render_scene`, with owned immutable `SceneFrame` candidates and atomic
+`SceneReplica` full-frame replacement. Brush placement and sampled studio,
+gait and held-model poses share the ordinary renderer's collectors and
+resources; owned poses move into draw instances. CPU capture needs no GPU
+and does not step simulation, authority or animation. Missing supported
+records disappear on replacement. Finite/pose, freshness and identity
+validation reject the whole candidate before mutation.
+
+Catalogs belong to one resource load/revision; even identical independent
+loads have distinct associations. Host epochs and generational local IDs
+require explicit future wire mapping. Hard project budgets are 4,096
+instances including held models, 262,144 bones and 128 body-selection
+entries per studio/held record. This slice excludes sprites/lightstyles,
+HUD, audio, transient effects, dynamic collision, prediction and a full
+remote client. It adds no serialization, gameplay transport or CLI.
+
+Independent review checked the final source and reran 18 focused scene
+tests successfully after the fix. Separate implementation validation passed
+post-fix strict all-target engine Clippy and four synthetic opt-in GPU
+cases: replica pixels, brush lifecycle, held/gait rendering and debris fallback. The
+earlier full engine run passed 789 tests with six ignored across 69
+summaries before the final narrow pose-move conversion fix. Final workspace
+integration validation remains separate. These project-synthetic results
+do not validate original-world replication or any of the four gameplay
+pairings.

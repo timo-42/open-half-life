@@ -17,11 +17,11 @@ use ohl_render::{
     RenderedModelInstance, SkyRenderer, SpriteInstance, StudioRenderPhase, StudioRenderer,
     SubmodelInstance, WorldRenderer, math, placement, wgpu,
 };
-use ohl_world::{Aabb, Frustum, StudioModel, StudioPose};
+use ohl_world::{Aabb, Frustum, StudioPose};
 
-use crate::components::{HeldWeapon, StudioAnim, StudioGait};
 use crate::error::{EngineError, Result};
-use crate::level::{Level, PropPlacement};
+use crate::level::Level;
+use crate::scene::{SceneBudget, SceneCatalog, SceneEpoch, SceneFrame, StudioRecord};
 use crate::sprites::TransientSprite;
 use crate::viewmodel::{self, ViewModelFrame};
 
@@ -134,6 +134,7 @@ impl RenderStageTimings {
 
 /// The GPU-side resources for one loaded level.
 pub(crate) struct Renderers {
+    scene_catalog: SceneCatalog,
     world: WorldRenderer,
     effects: ohl_render::EffectRenderer,
     fade: FadeRenderer,
@@ -158,6 +159,7 @@ impl Renderers {
         context: &GpuContext,
         level: &Level,
         format: wgpu::TextureFormat,
+        scene_catalog: &SceneCatalog,
     ) -> Result<Self> {
         let world =
             WorldRenderer::new(context, &level.world, format).map_err(|_| EngineError::Renderer)?;
@@ -183,6 +185,7 @@ impl Renderers {
             studio.push(renderer);
         }
         Ok(Self {
+            scene_catalog: scene_catalog.clone(),
             world,
             effects: ohl_render::EffectRenderer::new(context, format),
             fade: FadeRenderer::new(context, format),
@@ -224,6 +227,7 @@ impl Renderers {
         transient_sprites: &[TransientSprite],
         gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
         tank_pulses: &[crate::tanks::LaserPulse],
+        scene: Option<&SceneFrame>,
     ) {
         let (width, height) = (target.width.max(1), target.height.max(1));
         let mut checkpoint = self.stage_timings.as_ref().map(|_| Instant::now());
@@ -242,7 +246,7 @@ impl Renderers {
 
         let depth = self.world.depth_view().cloned();
         let (studio_frame, custom_ready) =
-            self.collect_studio_instances(level, camera, gameplay_effects);
+            self.collect_studio_instances(level, camera, gameplay_effects, scene);
         if let Some(depth) = depth.as_ref() {
             self.draw_props(
                 context,
@@ -261,7 +265,7 @@ impl Renderers {
         }
         self.record_stage(RenderStage::Sky, &mut checkpoint);
 
-        self.draw_brush_entities(context, level, camera, target);
+        self.draw_brush_entities(context, level, camera, target, scene);
         self.record_stage(RenderStage::Brush, &mut checkpoint);
 
         self.world
@@ -504,60 +508,20 @@ impl Renderers {
         level: &Level,
         camera: &FreeFlyCamera,
         effects: &crate::map_effects::EffectPresentation<'_>,
+        scene: Option<&SceneFrame>,
     ) -> (Vec<StudioFrame>, BTreeSet<u64>) {
-        let mut frame = Vec::new();
-        for (entity, anim, gait, transform) in
-            &mut level
-                .registry
-                .world
-                .query::<(Entity, &StudioAnim, Option<&StudioGait>, &Transform)>()
-        {
-            // A taken pickup is gone until (in a skirmish) it respawns.
-            if crate::skirmish::studio_hidden(&level.registry.world, entity) {
-                continue;
-            }
-            let prop = PropPlacement {
-                model: anim.model,
-                origin: transform.origin.to_array(),
-                yaw: transform.angles.y,
-                sequence: anim.sequence,
-                body: anim.body,
-                skin: anim.skin,
-                cycle: anim.cycle,
-            };
-            let Some(model) = level.studio_models.get(prop.model) else {
-                continue;
-            };
-            if self.studio.get(prop.model).is_none() {
-                continue;
-            }
-            let Ok(pose) = anim.sample(model, gait) else {
-                continue;
-            };
-            let mut entry = StudioFrame {
-                source: StudioSource::Entity(prop.model),
-                id: entity.to_bits().get(),
-                transform: placement(prop.origin, prop.yaw),
-                pose: Some(pose),
-                body: vec![prop.body],
-                skin: prop.skin,
-                ambient: ambient_at(level, prop.origin),
-                props: live_render_props(
-                    level,
-                    entity,
-                    ohl_game::keyvalues::RenderProps::default(),
-                ),
-                depth: 0.0,
-            };
-            entry.depth = entry
-                .instance(level)
-                .expect("prepared pose")
-                .view_depth(model, camera);
-            if let Some(held) = self.held_weapon_frame(level, entity, model, &entry, camera) {
-                frame.push(held);
-            }
-            frame.push(entry);
-        }
+        let mut frame = if let Some(scene) = scene {
+            studio_record_frames(level, camera, scene.studios().iter().cloned())
+        } else {
+            let collected = crate::scene::collect_studios(
+                level,
+                &self.scene_catalog,
+                SceneEpoch::new(0),
+                &mut SceneBudget::unrestricted(),
+            )
+            .unwrap_or_default();
+            studio_record_frames(level, camera, collected)
+        };
         let mut ready = BTreeSet::new();
         for record in effects.debris {
             let Some((slot, transform)) = level.debris_models.placement(record) else {
@@ -589,38 +553,6 @@ impl Renderers {
         }
         frame.sort_by_key(|entry| (entry.source.kind(), entry.id));
         (frame, ready)
-    }
-
-    fn held_weapon_frame(
-        &self,
-        level: &Level,
-        entity: Entity,
-        owner_model: &StudioModel,
-        owner: &StudioFrame,
-        camera: &FreeFlyCamera,
-    ) -> Option<StudioFrame> {
-        let slot = level
-            .registry
-            .world
-            .get::<&HeldWeapon>(entity)
-            .ok()?
-            .model?;
-        self.studio.get(slot)?;
-        let weapon = level.studio_models.get(slot)?;
-        let pose = StudioPose::merge(weapon, owner_model, owner.pose.as_ref()?)?;
-        let mut held = StudioFrame {
-            source: StudioSource::HeldWeapon(slot),
-            id: owner.id,
-            transform: owner.transform,
-            pose: Some(pose),
-            body: vec![0],
-            skin: 0,
-            ambient: owner.ambient,
-            props: owner.props,
-            depth: 0.0,
-        };
-        held.depth = held.instance(level)?.view_depth(weapon, camera);
-        Some(held)
     }
 
     /// Opaque geometry goes early; translucent meshes follow the completed
@@ -681,26 +613,38 @@ impl Renderers {
         level: &Level,
         camera: &FreeFlyCamera,
         target: RenderTarget<'_>,
+        scene: Option<&SceneFrame>,
     ) {
         #[allow(clippy::cast_precision_loss)]
         let aspect = target.width.max(1) as f32 / target.height.max(1) as f32;
         let frustum = camera.frustum(aspect);
         let mut draws = Vec::new();
-        for instance in ohl_game::brush::model_instances(&level.registry) {
-            let Some(model) = level.submodels.get(&instance.model_index) else {
+        let collected;
+        let records = if let Some(scene) = scene {
+            scene.brushes()
+        } else {
+            collected = crate::scene::collect_brushes(
+                level,
+                &self.scene_catalog,
+                SceneEpoch::new(0),
+                &mut SceneBudget::unrestricted(),
+            )
+            .unwrap_or_default();
+            &collected
+        };
+        for instance in records {
+            let model_index = instance.model.local_index();
+            let Some(model) = level.submodels.get(&model_index) else {
                 continue;
             };
-            let transform = brush_placement(&level.registry, instance.entity, instance.origin);
+            let transform = instance.transform;
             if !brush_in_frustum(&model.bounds, &transform, &frustum) {
                 continue;
             }
-            let Some(model) = self.submodels.get(&instance.model_index) else {
+            let Some(model) = self.submodels.get(&model_index) else {
                 continue;
             };
-            draws.push((
-                SubmodelInstance { model, transform },
-                live_render_props(level, instance.entity, instance.render),
-            ));
+            draws.push((SubmodelInstance { model, transform }, instance.render));
         }
         self.world.draw_world_submodels(
             context,
@@ -711,6 +655,72 @@ impl Renderers {
             target.height.max(1),
         );
     }
+}
+
+fn studio_record_frames(
+    level: &Level,
+    camera: &FreeFlyCamera,
+    records: impl IntoIterator<Item = StudioRecord>,
+) -> Vec<StudioFrame> {
+    let mut frame = Vec::new();
+    for record in records {
+        let id = record.identity.local_id().0;
+        push_studio_record_frame(
+            &mut frame,
+            level,
+            camera,
+            StudioFrame {
+                source: StudioSource::Entity(record.model.local_index()),
+                id,
+                transform: record.transform,
+                pose: Some(record.pose),
+                body: record.body,
+                skin: record.skin,
+                ambient: record.ambient,
+                props: record.render,
+                depth: 0.0,
+            },
+        );
+        if let Some(held) = record.held {
+            push_studio_record_frame(
+                &mut frame,
+                level,
+                camera,
+                StudioFrame {
+                    source: StudioSource::HeldWeapon(held.model.local_index()),
+                    id,
+                    transform: record.transform,
+                    pose: Some(held.pose),
+                    body: held.body,
+                    skin: held.skin,
+                    ambient: record.ambient,
+                    props: record.render,
+                    depth: 0.0,
+                },
+            );
+        }
+    }
+    frame
+}
+
+fn push_studio_record_frame(
+    frame: &mut Vec<StudioFrame>,
+    level: &Level,
+    camera: &FreeFlyCamera,
+    mut entry: StudioFrame,
+) {
+    let slot = match entry.source {
+        StudioSource::Entity(slot) | StudioSource::HeldWeapon(slot) => slot,
+        StudioSource::Debris(_) => return,
+    };
+    let Some(model) = level.studio_models.get(slot) else {
+        return;
+    };
+    let Some(instance) = entry.instance(level) else {
+        return;
+    };
+    entry.depth = instance.view_depth(model, camera);
+    frame.push(entry);
 }
 
 #[derive(Clone, Copy)]
@@ -1010,7 +1020,7 @@ fn brush_in_frustum(bounds: &Aabb, transform: &math::Mat4, frustum: &Frustum) ->
 
 /// The lighting a model standing at `origin` picks up, falling back to a
 /// dim ambient where the map samples nothing.
-fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
+pub(crate) fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
     let sampled = level.world.ambient_at(origin);
     if sampled.iter().all(|channel| *channel <= f32::EPSILON) {
         FALLBACK_AMBIENT
@@ -1082,7 +1092,7 @@ pub(crate) fn rotated_placement(
 
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues
 /// onto the renderer's typed render properties.
-fn live_render_props(
+pub(crate) fn live_render_props(
     level: &Level,
     entity: Entity,
     fallback: ohl_game::keyvalues::RenderProps,
@@ -1093,6 +1103,17 @@ fn live_render_props(
     // `RenderProps::from_entity` applies that rule (and the unknown-mode
     // fallback) for both `Normal` and `Solid`.
     RenderProps::from_entity(props.mode, props.amt, props.color, fx.0)
+}
+
+#[cfg(test)]
+fn synthetic_renderers(context: &GpuContext, level: &Level) -> Renderers {
+    Renderers::new(
+        context,
+        level,
+        ohl_render::OFFSCREEN_FORMAT,
+        &SceneCatalog::from_level(level),
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -1623,6 +1644,7 @@ mod gameplay_frame_tests {
             &[],
             effects,
             &[],
+            None,
         );
         target.read_rgba(context).unwrap()
     }
@@ -1639,11 +1661,11 @@ mod gameplay_frame_tests {
         }
         let mut other = Game::from_save(source, &switched).unwrap();
         let (level, systems) = other.level_and_systems_mut();
-        let mut renderers = Renderers::new(context, level, OFFSCREEN_FORMAT).unwrap();
+        let mut renderers = synthetic_renderers(context, level);
         renderers.debris_studio[0] = None;
         assert_eq!(
             renderers
-                .collect_studio_instances(level, camera, &systems.map_effects.presentation())
+                .collect_studio_instances(level, camera, &systems.map_effects.presentation(), None)
                 .1
                 .len(),
             6
@@ -1685,8 +1707,8 @@ mod gameplay_frame_tests {
             .map_effects
             .snapshot(&level.registry, level.player, &level.simulation);
         let effects = systems.map_effects.presentation();
-        let mut renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
-        let (frame, ready) = renderers.collect_studio_instances(level, &camera, &effects);
+        let mut renderers = synthetic_renderers(&context, level);
+        let (frame, ready) = renderers.collect_studio_instances(level, &camera, &effects, None);
         assert_eq!(ready.len(), 6);
         assert_eq!(
             frame
@@ -1725,7 +1747,7 @@ mod gameplay_frame_tests {
                 .any(|effect| matches!(effect, EffectInstance::Gib { .. }))
         );
         renderers.debris_studio[0] = None;
-        let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects);
+        let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects, None);
         assert!(ready.is_empty());
         let fallback = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &effects);
         capture("custom_fallback", &fallback);
@@ -1855,10 +1877,10 @@ mod gameplay_frame_tests {
         let (level, systems) = live.level_and_systems_mut();
         let effects = systems.map_effects.presentation();
         assert_eq!(effects.debris.len(), 6);
-        let mut renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
+        let mut renderers = synthetic_renderers(&context, level);
         assert!(
             renderers
-                .collect_studio_instances(level, &camera, &effects)
+                .collect_studio_instances(level, &camera, &effects, None)
                 .1
                 .is_empty()
         );
@@ -1879,6 +1901,7 @@ mod gameplay_frame_tests {
             &[],
             &effects,
             &[],
+            None,
         );
         assert_eq!(
             renderers
@@ -1983,6 +2006,7 @@ mod gameplay_frame_tests {
 #[cfg(test)]
 mod held_weapon_render_tests {
     use super::*;
+    use crate::components::{HeldWeapon, StudioAnim, StudioGait};
     use crate::test_support::{AI_MAP, deathmatch_room_bsp};
     use crate::{Game, MemoryAssets, SkirmishConfig};
     use ohl_render::{OFFSCREEN_FORMAT, OffscreenTarget};
@@ -2063,9 +2087,13 @@ mod held_weapon_render_tests {
             gait.play(Some(2), 1.0);
             gait.advance(0.05);
         }
-        let renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
-        let (frame, _) =
-            renderers.collect_studio_instances(level, &camera, &systems.map_effects.presentation());
+        let renderers = synthetic_renderers(&context, level);
+        let (frame, _) = renderers.collect_studio_instances(
+            level,
+            &camera,
+            &systems.map_effects.presentation(),
+            None,
+        );
         let body = frame
             .iter()
             .find(|entry| {

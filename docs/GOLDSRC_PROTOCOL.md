@@ -1,6 +1,6 @@
 # Original Half-Life multiplayer protocol evidence
 
-Research began 2026-10-16; target and query-codec review: 2026-10-17.
+Research began 2026-10-16; target and protocol-cohort review: 2026-10-17.
 The current requested result is the full final pre-Steam WON Half-Life
 deathmatch experience, with Rust client and server implementations using the
 original network protocol. Compatibility means
@@ -65,8 +65,8 @@ gameplay result. The ISO execution prohibition remains unchanged.
 
 ## Required client/server pairings
 
-All four pairings must run the original wire protocol and the complete
-deathmatch lifecycle:
+All four pairings remain pending. They must run the original wire protocol
+and the complete deathmatch lifecycle:
 
 | Client | Server | Required comparison |
 | --- | --- | --- |
@@ -125,10 +125,69 @@ establish neither distinct NIC packets nor original wire timing. Raw payloads
 and native text remain private.
 
 The public-update-only client stage's executable/config origins matched
-verified extracted entries plus project-authored configuration. Six observed
-launcher/support module records matched staged origins. Bounded startup
-survived until cleanup, but established no engine load, client UDP,
-authentication or sign-on. No ISO code or scripts were executed.
+verified extracted entries plus project-authored configuration. The current
+reference gate is `UnclassifiedPreEngineInputDialog`: two fresh short-C-drive
+starts, including Wine's documented Windows XP64 setting, retained matching
+stage hashes but observed no engine/game-client load or client
+protocol. No UDP reached the owned observation endpoint; this is not a
+system-wide traffic measurement. The dialog's cause is unclassified, with
+no established missing-key or missing-data diagnosis. Owned processes were
+stopped; no installer, ISO code or ISO scripts were executed.
+
+## Protocol-46 spectator packet cohorts
+
+Two separately bounded loopback HLDS/HLTV runs used the base-plus-d-update
+distribution above. Both executable origins matched the d update; native
+output remained 3.1.1.1/protocol 46, not a confirmed build identifier.
+Both native processes exited 0 in each run; each proxy reported three
+server-source statuses, with owned cleanup within 25 seconds. Each proxy
+log retained one loader-category and two other error indicators; these were
+not warning-free runtime results.
+
+| Cohort | Relay records / equal pairs | Eligible echo matches | Complete-capture SHA-256 |
+| --- | --- | --- | --- |
+| Baseline | 1,480 / 740 | 733 / 733 | `ed6097fd53b796c2d4fff8502a1dcb4af6b62817216d0efbfbc7a970b2e84471` |
+| Synthetic text | 1,430 / 715 | 708 / 708 | `711e5f5fce9d2a9cc3432332f2aa7408716dd83fa543e7214813fcb01e29da2c` |
+
+The unchanged high-water/bit-31-toggle candidate matched both spectator
+directions, excluding one unseen initial reference per run. The selected
+eight-byte view, low-30-bit projections, 2^29 guards and 512-state history
+remain project bounds; width, wrap, complete header, fragments and reliable
+delivery are unresolved. The relay synthesized envelopes and call-level
+timestamps; records at two boundaries are not distinct NIC packets.
+
+The unchanged [frozen word model](GOLDSRC_TRANSFORM.md) matched 60 unique
+authored texts of 96..103 bytes: 5,962 known bytes, 60 distinct low-counter
+bytes and all 16 mask slots covered by fully known complete words. Each
+packet/text length residue had 15 samples. Known text began at absolute UDP
+offset 14 and ended at offsets 110..117 exclusive. Two earlier command-sized
+candidates were excluded; there was no low-byte decrease and no known text
+in a partial-word tail. These results cover only proxy-to-server packets
+with first bit 30 clear, without fitting coefficients or identifying the
+whole remainder as plaintext.
+
+The explicit profiles are `PrefixProfile::ExperimentalProtocol46Linux3111d`
+and `WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds`;
+the historical protocol-48 selectors remain distinct. Tracker
+`observe_prefix` now returns `Result` and rejects foreign prefixes with
+`ChannelError::ProfileMismatch` before changing state/history. `compare_echo`
+returns `EchoComparison::ProfileMismatch`
+for a foreign observation; word operations return
+`WordTransformError::ProfileMismatch` before output changes. One unchanged
+coefficient table serves both word profiles. No profile is detected from bytes.
+
+Production-profile Rust replay matched 708 eligible echoes, excluded one
+unseen reference and matched all 60 texts/5,962 bytes, plus 60 inverse,
+60 output-sentinel and 60 opaque-tail preservation checks. This is
+post-implementation conformance to the frozen hypothesis, not an independent
+held-out discovery or tail-plaintext result. Six new synthetic tests bring
+focused `ohl-net` validation to 111 passed and one ignored; strict crate
+Clippy, targeted formatting and diff checks passed.
+
+A passive reverse scan found no authored text in 288 clear-bit-30 candidates;
+delivery of that text to the proxy was not established. Reverse compatibility
+remains unverified. These cohorts establish no ordinary-player sign-on,
+endpoint command consumption, complete channel or playable CLI.
 
 ## Bounded query observation
 
@@ -250,7 +309,7 @@ semantics, fragmentation, byte munging nor normal-player compatibility.
 An experimental prefix tracker must keep the remaining bytes opaque and
 must not automatically pass them to the server-message reader.
 
-`ohl-net::channel::decode_datagram` requires the caller-selected
+For this historical cohort, `ohl-net::channel::decode_datagram` selects
 `PrefixProfile::ExperimentalProtocol48`. It classifies the documented query
 markers without validating their bodies, or returns a `PacketPrefix` and
 an explicitly unvalidated remainder. A 1,400-byte datagram cap and
@@ -303,7 +362,7 @@ payload decoder, a solved transform or a successful sign-on session.
 ## Experimental full-word transform
 
 [GOLDSRC_TRANSFORM.md](GOLDSRC_TRANSFORM.md) specifies an independently
-inferred word operation for the tested official proxy-to-server direction,
+inferred word operation for the historical official proxy-to-server direction,
 protocol 48, app-90 distribution build 15961496, observed 2026-10-16. The
 model was calibrated only from synthetic text; its first fully held-out
 check matched 60/60 known texts, with one earlier candidate excluded. The
@@ -311,6 +370,8 @@ specification records the frozen model/capture digests, exact operation and
 inverse, measured coverage and extrapolated applicability.
 Scoped Rust codec checks and private replay results are recorded there
 separately from the prior parser/prefix validation above.
+The separate protocol-46 cohort above uses its own explicit profiles and the
+unchanged model; the protocol-48 observations are not relabelled.
 
 The bounded codec operates on complete words after the selected eight-byte
 view and leaves a final zero-through-three-byte tail opaque. No known text

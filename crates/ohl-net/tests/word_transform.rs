@@ -16,6 +16,9 @@ use ohl_net::{
 };
 
 const PROFILE: WordTransformProfile = WordTransformProfile::ExperimentalProtocol48HltvToHlds;
+const PROFILE46: WordTransformProfile =
+    WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds;
+const PREFIX46: PrefixProfile = PrefixProfile::ExperimentalProtocol46Linux3111d;
 const BIT_30: u32 = 1 << 30;
 const BIT_31: u32 = 1 << 31;
 const PLAIN_VECTOR: [u8; 4] = [0x10, 0x21, 0x32, 0x43];
@@ -29,9 +32,11 @@ fn packet(first: u32, second: u32, remainder: &[u8]) -> Vec<u8> {
 }
 
 fn prefix(bytes: &[u8]) -> PacketPrefix<'_> {
-    let DecodedDatagram::Packet(prefix) =
-        decode_datagram(bytes, PrefixProfile::ExperimentalProtocol48).unwrap()
-    else {
+    prefix_with_profile(PrefixProfile::ExperimentalProtocol48, bytes)
+}
+
+fn prefix_with_profile(profile: PrefixProfile, bytes: &[u8]) -> PacketPrefix<'_> {
+    let DecodedDatagram::Packet(prefix) = decode_datagram(bytes, profile).unwrap() else {
         panic!("expected a synthetic guarded prefix");
     };
     prefix
@@ -340,9 +345,144 @@ fn automatic_debug_and_errors_never_expose_bytes_or_counter() {
         WordTransformError::OutputTooSmall,
         WordTransformError::PartialWordInput,
         WordTransformError::DatagramLimit,
+        WordTransformError::ProfileMismatch,
     ] {
         assert!(!error.to_string().is_empty());
         assert!(!format!("{error:?}").contains('['));
         assert!(!error.to_string().contains(&0x0123_4567_u32.to_string()));
     }
+}
+
+#[test]
+fn protocol46_matches_both_manual_vectors_and_retains_opaque_tails() {
+    for length in 0..=3 {
+        let tail = &[0x97, 0xA8, 0xB9][..length];
+        let mut bytes = packet(0x5A, BIT_30 | BIT_31, &CIPHER_VECTOR);
+        bytes.extend_from_slice(tail);
+        let selected = prefix_with_profile(PREFIX46, &bytes);
+        assert_eq!(selected.profile(), PREFIX46);
+        let mut output = [0xCC; 12];
+        let decoded = decode_full_words(PROFILE46, selected, &mut output[2..10]).unwrap();
+        assert_eq!(decoded.complete_words().as_bytes(), PLAIN_VECTOR);
+        assert_eq!(decoded.opaque_tail().as_bytes(), tail);
+        assert_eq!(
+            decoded.opaque_tail().as_bytes().as_ptr(),
+            bytes[12..].as_ptr()
+        );
+        assert_eq!(&output[..2], &[0xCC; 2]);
+        assert_eq!(&output[6..], &[0xCC; 6]);
+        let mut encoded = [0xDD; 12];
+        let words =
+            encode_full_words(PROFILE46, selected, &PLAIN_VECTOR, &mut encoded[1..9]).unwrap();
+        assert_eq!(words.as_bytes(), CIPHER_VECTOR);
+        assert_eq!(encoded[0], 0xDD);
+        assert_eq!(&encoded[5..], &[0xDD; 7]);
+    }
+
+    // Reuse the independently worked s=64/q=C7 example, not a captured word.
+    let plain_word = [0x19, 0xA2, 0x3B, 0xC4];
+    let cipher_word = [0x03, 0x63, 0xF2, 0xDE];
+    let context = packet(0xC7, 0, &[]);
+    let mut plain = [0x11; 60];
+    plain[56..].copy_from_slice(&plain_word);
+    let mut output = [0xCC; 64];
+    let encoded = encode_full_words(
+        PROFILE46,
+        prefix_with_profile(PREFIX46, &context),
+        &plain,
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(&encoded.as_bytes()[56..], &cipher_word);
+    assert_eq!(&output[60..], &[0xCC; 4]);
+    let mut cipher = [0x22; 60];
+    cipher[56..].copy_from_slice(&cipher_word);
+    let bytes = packet(0xC7, 0, &cipher);
+    let decoded = decode_full_words(
+        PROFILE46,
+        prefix_with_profile(PREFIX46, &bytes),
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(&decoded.complete_words().as_bytes()[56..], &plain_word);
+    assert_eq!(&output[60..], &[0xCC; 4]);
+}
+
+#[test]
+fn cross_profile_word_operations_reject_before_any_output_write() {
+    for (word_profile, foreign_prefix) in [
+        (PROFILE46, PrefixProfile::ExperimentalProtocol48),
+        (PROFILE, PREFIX46),
+    ] {
+        for first_flags in [0, BIT_30] {
+            let bytes = packet(0x5A | first_flags, 0, &CIPHER_VECTOR);
+            let foreign = prefix_with_profile(foreign_prefix, &bytes);
+            let mut output = [0xCE; 12];
+            assert_eq!(
+                decode_full_words(word_profile, foreign, &mut output).unwrap_err(),
+                WordTransformError::ProfileMismatch
+            );
+            assert_eq!(output, [0xCE; 12]);
+            assert_eq!(
+                encode_full_words(word_profile, foreign, &PLAIN_VECTOR, &mut output).unwrap_err(),
+                WordTransformError::ProfileMismatch
+            );
+            assert_eq!(output, [0xCE; 12]);
+            // Mismatch is reported even for an empty output or partial input.
+            assert_eq!(
+                decode_full_words(word_profile, foreign, &mut output[..0]).unwrap_err(),
+                WordTransformError::ProfileMismatch
+            );
+            assert_eq!(
+                encode_full_words(word_profile, foreign, &[0; 3], &mut output[..0]).unwrap_err(),
+                WordTransformError::ProfileMismatch
+            );
+            assert_eq!(output, [0xCE; 12]);
+        }
+    }
+}
+
+#[test]
+fn protocol46_word_profile_preserves_flag_length_and_capacity_guards() {
+    let bytes = packet(0x5A | BIT_30, 0, &CIPHER_VECTOR);
+    let mut output = [0xCF; 12];
+    let blocked = prefix_with_profile(PREFIX46, &bytes);
+    assert_eq!(
+        decode_full_words(PROFILE46, blocked, &mut output).unwrap_err(),
+        WordTransformError::FirstBit30Set
+    );
+    assert_eq!(
+        encode_full_words(PROFILE46, blocked, &PLAIN_VECTOR, &mut output).unwrap_err(),
+        WordTransformError::FirstBit30Set
+    );
+    assert_eq!(output, [0xCF; 12]);
+    let bytes = packet(0x5A, 0, &CIPHER_VECTOR);
+    let context = prefix_with_profile(PREFIX46, &bytes);
+    for length in 1..=3 {
+        assert_eq!(
+            encode_full_words(PROFILE46, context, &PLAIN_VECTOR[..length], &mut output)
+                .unwrap_err(),
+            WordTransformError::PartialWordInput
+        );
+        assert_eq!(output, [0xCF; 12]);
+    }
+    assert_eq!(
+        decode_full_words(PROFILE46, context, &mut output[..3]).unwrap_err(),
+        WordTransformError::OutputTooSmall
+    );
+    assert_eq!(
+        encode_full_words(PROFILE46, context, &PLAIN_VECTOR, &mut output[..3]).unwrap_err(),
+        WordTransformError::OutputTooSmall
+    );
+    assert_eq!(
+        encode_full_words(
+            PROFILE46,
+            context,
+            &vec![0; MAX_FULL_WORD_BYTES + 4],
+            &mut output
+        )
+        .unwrap_err(),
+        WordTransformError::DatagramLimit
+    );
+    assert_eq!(output, [0xCF; 12]);
 }
