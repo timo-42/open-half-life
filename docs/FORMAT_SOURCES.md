@@ -8919,8 +8919,8 @@ or deathmatch compatibility.
   decoded-channel compatibility; no HLTV implementation source was used.
 
 All implementation must remain independently authored under `CLEAN_ROOM.md`.
-Netchan framing/reliability, channel fragments, byte munging, complete deltas,
-movement checksums, sign-on, and Steam ticket embedding remain evidence gaps.
+Netchan framing/reliability, channel fragments, complete transform coverage,
+complete deltas, movement checksums, sign-on, and Steam ticket embedding remain evidence gaps.
 Neither a custom Rust protocol nor successful server queries closes them.
 
 The protocol ledger also records independently reviewed black-box
@@ -8931,3 +8931,14 @@ they do not establish reliability, header extent, counter width/wrap or player
 compatibility. Source-code search snippets and summaries were excluded from
 the implementation evidence. Fixtures are independently authored synthetic
 data; original captures and their contents stay private.
+
+[GOLDSRC_TRANSFORM.md](GOLDSRC_TRANSFORM.md) records the separate functional
+word-transform specification for the dated official app-90 distribution
+build 15961496/protocol-48 proxy-to-server reference. Its permutation and
+minimal position-mask coefficients were independently inferred from known
+synthetic text, with no implementation source or captured content used as
+a fixture. The complete model was frozen before the fresh 60-text check;
+the earlier nine phase-selection samples are calibration. The specification
+records complete-source digests, mathematical indexing/inverse rules and
+the unverified tail, direction and extrapolation limits. Public query
+prose is not claimed as the source of these observed functional parameters.

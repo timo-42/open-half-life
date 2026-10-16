@@ -26,6 +26,17 @@ feed its opaque remainder to this payload reader. Both interfaces remain
 disconnected from gameplay sockets
 and the authoritative adapter.
 
+`ohl-net::word_transform` is a separate experimental complete-word operation
+with a fixed mathematical model derived from synthetic-text black-box
+experiments. Its explicit `ExperimentalProtocol48HltvToHlds` profile requires
+the guarded proxy-to-server prefix with first bit 30 clear, returns
+candidate decoded words separately from an opaque original tail and rejects
+partial-word encoding. It constructs no prefix,
+does not send packets and does not feed the message reader. The
+[mathematical specification](GOLDSRC_TRANSFORM.md) distinguishes measured
+coverage from inferred use at other offsets/counters and leaves tail and
+other-direction semantics open.
+
 `ohl-engine::deathmatch::Deathmatch` is a separate authoritative gameplay
 adapter over the existing skirmish simulation. It has no socket or dependency
 on `ohl-net`. Dedicated matches disable the implicit local spectator as a
@@ -41,8 +52,8 @@ turrets, pushables and pressure breakables still need multiplayer adaptation.
 Command aggregation within a fixed step is project-defined, with each
 command's movement rotated and capped before duration averaging.
 Original gameplay sign-on, reliable
-channel framing, byte munging, delta schemas, client movement checksums,
-prediction, and authentication have not been implemented. The public
+channel framing, complete transform coverage, delta schemas, client movement
+checksums, prediction, and authentication have not been implemented. The public
 evidence and compatibility gates are in
 [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md). A successful server query and
 synthetic multi-human combat test establish separate, bounded results.
@@ -57,7 +68,7 @@ not part of the repository).
 | crate | responsibility | std? |
 | --- | --- | --- |
 | `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
-| `ohl-net` | Valve queries/discovery, bounded svc payload reader, experimental prefix tracking | std |
+| `ohl-net` | Valve queries/discovery, bounded svc reader, experimental prefix/word codecs | std |
 | `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
 | `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
 | `ohl-parser-worker` | hosted binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `std`; static musl on Linux, libSystem on macOS |

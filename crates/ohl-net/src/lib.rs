@@ -37,6 +37,7 @@ mod client;
 mod codec;
 pub mod message;
 mod split;
+pub mod word_transform;
 
 pub use client::{DiscoveredServer, discover_lan, query_info, query_players, query_rules};
 pub use codec::{decode_response, encode_request};

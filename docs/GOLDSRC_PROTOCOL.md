@@ -9,7 +9,8 @@ and original-server gameplay interoperability remain unverified.
 
 This ledger supplements [BEHAVIOR_SPEC.md](BEHAVIOR_SPEC.md). The
 [clean-room policy](CLEAN_ROOM.md) and [local data boundary](MEDIA_IMPORT.md)
-apply throughout. Its sources are published prose and packet-format tables.
+apply throughout. Its sources are published prose, packet-format tables and
+reviewed lawful black-box observations.
 No engine source, decompilation, disassembly, or recovered implementation is
 an implementation source. The user's ISO remains read-only, and binaries or
 installers from it must not be executed.
@@ -21,7 +22,8 @@ installers from it must not be executed.
 - **Observed** requires a repeatable black-box experiment against an
   identified, lawfully acquired runtime. No normal-player gameplay comparison
   or decoded-channel compatibility result is recorded. Opaque official HLTV
-  proxy traffic and bounded packet-prefix correlations are recorded below.
+  proxy traffic and bounded packet-prefix correlations are recorded below;
+  the separate word-transform model has its own scoped validation record.
 - **Inferred** identifies a provisional interpretation selected for an
   experiment or parser; it is not a verified original-protocol rule.
 - **Project choice** describes a proposed design, budget, or test constraint.
@@ -212,6 +214,26 @@ independent extraction byte for byte. This checks extraction fidelity only;
 byte/field extraction is not evidence of protocol semantics, a complete
 payload decoder, a solved transform or a successful sign-on session.
 
+## Experimental full-word transform
+
+[GOLDSRC_TRANSFORM.md](GOLDSRC_TRANSFORM.md) specifies an independently
+inferred word operation for the tested official proxy-to-server direction,
+protocol 48, app-90 distribution build 15961496, observed 2026-10-16. The
+model was calibrated only from synthetic text; its first fully held-out
+check matched 60/60 known texts, with one earlier candidate excluded. The
+specification records the frozen model/capture digests, exact operation and
+inverse, measured coverage and extrapolated applicability.
+Scoped Rust codec checks and private replay results are recorded there
+separately from the prior parser/prefix validation above.
+
+The bounded codec operates on complete words after the selected eight-byte
+view and leaves a final zero-through-three-byte tail opaque. No known text
+entered that incomplete tail, so tail plaintext is unverified. First-word
+bit 30 must be clear. No packet send path, automatic svc decoding, reliable
+channel, authentication or normal-player compatibility follows from this
+result. Other directions, header extent, higher-counter/body-range
+applicability and complete transform variants remain evidence gaps.
+
 ## Documented connectionless query formats
 
 The primary specification is Valve Developer Community's [Server queries][P1],
@@ -307,9 +329,11 @@ close an evidence gap:
 - Reliable normal/file fragment headers, identifiers, offsets, reassembly,
   interleaving, compression, and size limits. Connectionless query splits
   above do not specify these channel fragments.
-- GoldSrc byte munging: transforms, constants, direction, key/sequence
-  relationship, covered byte range, and treatment of trailing bytes. No
-  reviewed public prose source here establishes these details.
+- Complete GoldSrc byte munging: the experimental
+  [full-word proxy-to-server model](GOLDSRC_TRANSFORM.md) does not establish
+  other directions/variants, every counter or body range, complete header
+  extent or trailing-byte rules. No reviewed public prose source here
+  establishes those remaining details.
 - Delta field metadata bootstrap, complete field types, bit order,
   quantization, signed values, conditional fields, and baseline selection.
   Published message tables name delta-compressed payloads without resolving

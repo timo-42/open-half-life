@@ -9738,9 +9738,10 @@ were excluded, and a mirror model had 777 contradictions. Counter widths
 29/30 remain indistinguishable, a width guard is a project limit and bit 30
 is opaque. [The protocol ledger](GOLDSRC_PROTOCOL.md) records full-source
 digests, REA extraction-only evidence and the relay's synthesized-envelope
-limits. Header extent, reliability, wrap/reset rules, byte munging and normal
-player input/authentication/prediction remain unresolved; no transform or
-gameplay-connection result is claimed.
+limits. Header extent, reliability, wrap/reset rules, complete transform
+coverage and normal player input/authentication/prediction remain unresolved.
+At this checkpoint no transform or gameplay-connection result was claimed;
+the separate word-transform addendum below has a narrower scope.
 
 Independent Rust replay of all seven reference traces matched 5,342 exact
 historical echo observations, excluded seven unobserved references and
@@ -9756,3 +9757,32 @@ test ignored. Full workspace formatting, strict workspace/all-target Clippy
 and diff checks passed after the fix. The full suite was not repeated for
 the diagnostic change. Cargo-deny passed advisories, bans, licenses and
 sources with the existing configured warnings.
+
+The separate [experimental word-transform specification](GOLDSRC_TRANSFORM.md)
+records a synthetic-derived complete-word model for official app-90
+distribution build 15961496/protocol 48 in the tested proxy-to-server
+direction. After model freeze, an independent check matched 60/60 synthetic
+texts of lengths 96 through 103 across all 16 mask positions and 57 low
+counter bytes; one earlier candidate was excluded. Nine samples from an
+older run participated in phase/permutation selection and are calibration,
+not a fully held-out check. A bounded word codec leaves original partial
+tails opaque, rejects partial-word encoding and first-bit-30-set packets,
+and has no message-reader or socket integration. Tail plaintext, other
+directions, complete header/reliability/authentication and normal-player
+gameplay remain unverified. Existing validation totals above describe the
+earlier parser/prefix unit, not this new word-codec unit.
+
+The word-codec unit's final locked `ohl-net` run passed 65 tests (13 new
+word-codec tests plus the prior 52), with one explicit query-reference test
+ignored. Strict all-target crate Clippy, targeted formatting and diff checks
+passed, with no workspace-lock change. Private Rust replay matched the
+independent frozen model, exact known texts and inverse encoded-word buffers
+for all 60 held-out selected datagrams; 60 tail-preservation and 60
+output-sentinel checks passed. Those tail checks verify preservation only,
+not decoded plaintext or original tail semantics. No original gameplay
+connection is claimed for this new unit.
+
+Final integration validation, `cargo test --workspace --locked`, passed
+3,294 tests with 38 ignored across 254 result summaries. Full workspace
+formatting, strict workspace/all-target Clippy and cargo-deny checks also
+passed, with no workspace-lock change.
