@@ -21,7 +21,9 @@ installers from it must not be executed.
 - **Observed** requires a repeatable black-box experiment against an
   identified, lawfully acquired runtime. No normal-player gameplay comparison
   or decoded-channel compatibility result is recorded. Opaque official HLTV
-  proxy traffic is recorded below.
+  proxy traffic and bounded packet-prefix correlations are recorded below.
+- **Inferred** identifies a provisional interpretation selected for an
+  experiment or parser; it is not a verified original-protocol rule.
 - **Project choice** describes a proposed design, budget, or test constraint.
 - **Unresolved** means the evidence is insufficient to implement or claim
   compatibility.
@@ -128,6 +130,88 @@ remains open. Normal-player input, authentication, and prediction still
 require a runnable original player client and separate validation. The
 prohibition on executing binaries from the supplied ISO remains in force.
 
+## Controlled packet-prefix observations
+
+The coordinator and independent analyst compared six controlled loopback
+HLDS/HLTV runs with one held-out run. The controls included bounded local
+packet loss, duplication and reordering. All six controlled runs ended
+with exit status 0 before nineteen seconds within a twenty-five-second hard
+deadline, with three status headings each. These are the same separately
+downloaded official protocol-48 server and spectator-proxy reference class;
+no normal player client or ISO binary was run.
+
+A candidate model reads an eight-byte prefix view as two little-endian
+32-bit words at offsets 0 and 4. It retains a high-water counter and toggles
+an initially false parity state when an accepted increasing first counter
+has bit 31 set. At the exact accepted counter referenced by the opposite
+word, it predicted all 5,342 eligible opposite-word observations, with zero
+contradictions. Seven initial observations were excluded because the
+referenced state had not
+been seen. The bounded controls also yielded one duplicate and one stale
+prefix rejected without advancing the model. A competing model that mirrored
+the referenced packet's first bit-31 flag had 777 contradictions even with
+its best fixed inversion per run/direction. These are counts of model
+comparisons, not distinct wire packets or proof of reliable delivery.
+
+The observed counter values do not distinguish 29-bit and 30-bit widths.
+The selected profile projects the low 30 bits of both words and guards both
+below 2^29; this is a project limit, not an observed wrap boundary. Bit 30
+remains separately opaque. These correlations establish neither complete
+header size, sequence wrap/reset rules, reliable acknowledgement or retransmission
+semantics, fragmentation, byte munging nor normal-player compatibility.
+An experimental prefix tracker must keep the remaining bytes opaque and
+must not automatically pass them to the server-message reader.
+
+`ohl-net::channel::decode_datagram` requires the caller-selected
+`PrefixProfile::ExperimentalProtocol48`. It classifies the documented query
+markers without validating their bodies, or returns a `PacketPrefix` and
+an explicitly unvalidated remainder. A 1,400-byte datagram cap and
+`ReceiveTracker`'s fixed history of 512 exact accepted-counter states are
+project bounds. Echo comparisons exclude unseen or evicted references;
+duplicate and stale observations do not advance state. Debug output redacts
+raw words and remainders. Callers must associate directions and streams;
+the tracker provides no peer authentication, reset detection or send path.
+
+Independent Rust replay of all seven reference traces matched 5,342 exact
+historical echo observations and excluded seven unobserved references. It
+classified one duplicate and one stale prefix, and 35 typed connectionless
+errors left tracker state unchanged. No prefix/model mismatches were found;
+the fixed 512-state history retained all eligible references in these runs.
+
+Before the final diagnostic opcode-redaction fix, the full locked workspace
+test fallback passed 3,280 tests with 38 ignored across 253 result summaries.
+After that diagnostic-only fix, the focused locked `ohl-net` run passed 52
+tests (15 svc, 14 prefix and 23 query tests), with one original-reference
+test ignored. Full workspace formatting, strict workspace/all-target Clippy
+and diff checks passed after the fix. The full suite was not repeated for
+the diagnostic change; these checks do not establish gameplay compatibility.
+
+The independently reviewed SHA-256 values below identify the **complete
+private capture files**. Run labels name project controls; they are not
+original-protocol identifiers. The captures use an application UDP relay
+with records at two boundaries and synthesized IP/UDP envelopes and
+call-level timestamps. They establish no original IP headers, NIC timing
+or hardware acquisition. Raw captures, commands and diagnostics remain
+ignored/private.
+
+| Project run | Complete capture SHA-256 |
+| --- | --- |
+| `baseline` | `af16158c4961d4b6d5a1b256e154917f857208e6cd62f73a590977dd4f29629c` |
+| `drop_proxy` | `45bd5a79d029e7647cf5c31c7be6ab1d3ed5ba73e531eb2e9a2b933738cbdce7` |
+| `drop_server` | `a33d8c807bf3180767212a819953ad068a2539d0a326f8423630ab1bc822c626` |
+| `drop_server_bit_thirty` | `6ff4fc5d557ec8248276e29e79925527128d0b2a93f065d707725974c33889da` |
+| `duplicate_server` | `3a46bff7c77e08d2bfa9f7e6d2f0bf7dd0544151537acc9a7346538d6c5b941d` |
+| `reorder_server` | `2a86abdad4f01bd47eaaacba2c2de70adef4fd102fe3277659852fe573a270ea` |
+| `heldout_known_command` | `0fc97b1e190545998b37def38de31f05451e7b28e5ca9ab714e1331e7c056508` |
+
+For the held-out capture, REA 6.5.0 with TShark 4.6.9 produced evidence
+`ev_80a020ccd607baa9a211df8682b102af4d6218268df55e85e8ccff3b1320ed1c`.
+With a packet limit of 2,048 it reported twelve matching records, returned
+eight and set `has_more` to true. Eight selected UDP payloads matched an
+independent extraction byte for byte. This checks extraction fidelity only;
+byte/field extraction is not evidence of protocol semantics, a complete
+payload decoder, a solved transform or a successful sign-on session.
+
 ## Documented connectionless query formats
 
 The primary specification is Valve Developer Community's [Server queries][P1],
@@ -183,14 +267,35 @@ tickets, or interpret an accepted connectionless request as a spawned player.
 
 ## Server-message evidence and remaining gaps
 
-AlliedModders' [Half-Life 1 Engine Messages][P4] publishes server-message
-numbers and field tables. Examples include no-payload `SVC_NOP` (1),
-disconnect reason string (2), floating-point server time (7), and sign-on
-number (25). It describes bit-packed client state, entity state/baselines,
-resources, and delta-description exchange. Game-specific messages are
+AlliedModders' [Half-Life 1 Engine Messages][P4], revision 11325, publishes
+server-message numbers and field tables. Examples include no-payload
+`SVC_NOP` (1), disconnect reason string (2), floating-point server time (7),
+and sign-on number (25). It describes bit-packed client state, entity
+state/baselines, resources, and delta-description exchange. Game-specific messages are
 documented separately in [Half-Life 1 Game Events][P4G]. These are useful
 payload references after a compatible channel has been established; they
 are not a specification of UDP channel framing.
+
+`ohl-net::message::MessageReader` independently implements 15 of those
+byte-aligned opcode layouts for an **already isolated payload**. Callers
+must explicitly select
+`ByteModeProfile::InferredLittleEndianNulStrings`: 16/32-bit little-endian
+integer words, four uninterpreted bytes per float, and NUL-terminated byte
+strings. Applying Valve's published query primitive rules to svc messages is
+an inference, not an original-gameplay verification. `WireFloat` performs no
+floating-point conversion, and borrowed `WireText` performs no encoding,
+command, path or display interpretation. Debug output redacts text, opaque
+hashes and map CRC fingerprints.
+
+The allocation-free iterator yields a valid prefix, then one error and stops
+permanently on malformed, unsupported or over-budget input. It never skips
+an unknown layout or scans for a later opcode. Project bounds are 64 KiB per
+payload, 4,096 messages, 4,096 bytes per regular text field and 8,192 bytes for
+mapcycle text. Sign-on number 25 accepts only the documented literal byte 1;
+this does not implement a sign-on session. Opcode 39 remains unsupported
+because its published name width contradicts the accompanying prose. Tests
+use authored synthetic bytes only. No channel adapter passes recorded
+traffic to this reader, and it does not execute server-supplied commands.
 
 The following still require admissible documentation or reviewed black-box
 evidence. Existing project code or another engine's implementation cannot
@@ -294,15 +399,16 @@ This is a **project plan**, not a statement of completed compatibility:
    scoring, pickups, respawn, chat, spectator behavior, map transitions,
    and intermission under local multiplayer scenarios.
 
-Until these gates pass, describe the work as protocol research and discovery
-support. Do not advertise a complete deathmatch implementation or replace the
-requested original wire protocol with an unlabelled custom protocol.
+Until these gates pass, describe the work as protocol research, discovery and
+bounded payload parsing. Do not advertise a complete deathmatch implementation
+or replace the requested original wire protocol with an unlabelled custom
+protocol.
 
 [P1]: https://developer.valvesoftware.com/wiki/Server_queries
 [P1A]: https://web.archive.org/web/20230831123627id_/https://developer.valvesoftware.com/wiki/Server_queries
 [P2]: https://int64.org/docs/gamestat-protocols/halflife.html
 [P3]: https://seclists.org/bugtraq/2002/Jun/254
-[P4]: https://wiki.alliedmods.net/Half-Life_1_Engine_Messages
+[P4]: https://wiki.alliedmods.net/index.php?title=Half-Life_1_Engine_Messages&oldid=11325
 [P4G]: https://wiki.alliedmods.net/Half-Life_1_Game_Events
 [P5]: https://forums.sourceruns.org/t/goldsrc-package-2-4/2634
 [P6]: https://www.half-life.com/en/halflife/25th

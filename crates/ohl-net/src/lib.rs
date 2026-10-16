@@ -32,8 +32,10 @@
 //! [2023-08-31 archive]: https://web.archive.org/web/20230831123627id_/https://developer.valvesoftware.com/wiki/Server_queries
 //! [public document mirror]: https://github.com/rocketsciencegg/qstat/blob/main/info/a2s.txt
 
+pub mod channel;
 mod client;
 mod codec;
+pub mod message;
 mod split;
 
 pub use client::{DiscoveredServer, discover_lan, query_info, query_players, query_rules};

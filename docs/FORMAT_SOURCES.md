@@ -8896,10 +8896,15 @@ or deathmatch compatibility.
 - [Luigi Auriemma: Half-life fake players bug](https://seclists.org/bugtraq/2002/Jun/254):
   the author's 2002 prose report of the connectionless challenge/connect
   exchange. Its attached proof-of-concept was not used.
-- [AlliedModders: Half-Life 1 Engine Messages](https://wiki.alliedmods.net/Half-Life_1_Engine_Messages)
+- [AlliedModders: Half-Life 1 Engine Messages, revision 11325](https://wiki.alliedmods.net/index.php?title=Half-Life_1_Engine_Messages&oldid=11325)
   and [Game Events](https://wiki.alliedmods.net/Half-Life_1_Game_Events):
   published message descriptions and field tables; no source-code listings
-  were used. These do not specify the complete sequenced channel.
+  were used. The bounded `ohl-net::message` reader uses 15 byte-aligned
+  opcode layouts. Primitive framing is an explicitly selected provisional
+  profile inferred from the Valve query data types above, not independent
+  svc verification: LE integer words, raw four-byte floats and NUL byte
+  strings. The contradictory user-message name width is unsupported.
+  These tables do not specify the complete sequenced channel.
 - [Valve Steamworks: Distributing Your Dedicated Game Server](https://partner.steamgames.com/doc/sdk/uploading/distributing_gs),
   [User Authentication and Ownership](https://partner.steamgames.com/doc/features/auth),
   and [VDC GoldSrc server options](https://developer.valvesoftware.com/wiki/CHILLMODEA/Pages/Command_line_options_%28GoldSrc_Dedicated_Server%29):
@@ -8917,3 +8922,12 @@ All implementation must remain independently authored under `CLEAN_ROOM.md`.
 Netchan framing/reliability, channel fragments, byte munging, complete deltas,
 movement checksums, sign-on, and Steam ticket embedding remain evidence gaps.
 Neither a custom Rust protocol nor successful server queries closes them.
+
+The protocol ledger also records independently reviewed black-box
+counter/parity comparisons from six controlled official HLDS/HLTV runs and
+one held-out run, with complete-source capture digests and measurement limits.
+These observations are the provenance for experimental prefix tracking only;
+they do not establish reliability, header extent, counter width/wrap or player
+compatibility. Source-code search snippets and summaries were excluded from
+the implementation evidence. Fixtures are independently authored synthetic
+data; original captures and their contents stay private.

@@ -2,13 +2,29 @@
 
 ## Original-protocol multiplayer work
 
-`ohl-net` is a dependency-free leaf for documented Valve connectionless
-queries. It owns bounded UDP request/response handling, challenge retries,
+`ohl-net` is a dependency-free leaf for original-protocol research. Its
+network I/O provides bounded UDP query handling, challenge retries,
 GoldSrc query-fragment reassembly and LAN discovery. It does not access game
 assets, ECS state, rendering, media import or Steam credentials. `ohl-app`
 owns a bounded background query worker and passes display rows into the UI;
 query work is polled while menus or the console pause local gameplay.
 Worker errors and CLI output exclude server-provided text.
+
+`ohl-net::message::MessageReader` separately reads an already isolated
+payload for 15 published byte-aligned svc opcode layouts. Callers explicitly
+select a provisional primitive profile inferred from query documentation;
+it is not verified gameplay framing. Float fields remain raw four-byte
+values and text remains borrowed opaque bytes. Unsupported, malformed and
+over-budget messages stop the reader without resynchronization; commands
+are never executed. Debug output redacts text, hashes and map fingerprints.
+A separate `ohl-net::channel::ReceiveTracker`, selected with
+`PrefixProfile::ExperimentalProtocol48`, follows bounded counter/parity
+observations from the official loopback spectator reference. Its eight-byte
+prefix view and 512-state history are bounded separately from the datagram's
+unvalidated remainder. It does not establish reliable-channel semantics or
+feed its opaque remainder to this payload reader. Both interfaces remain
+disconnected from gameplay sockets
+and the authoritative adapter.
 
 `ohl-engine::deathmatch::Deathmatch` is a separate authoritative gameplay
 adapter over the existing skirmish simulation. It has no socket or dependency
@@ -41,7 +57,7 @@ not part of the repository).
 | crate | responsibility | std? |
 | --- | --- | --- |
 | `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
-| `ohl-net` | original Valve connectionless server queries and bounded UDP discovery | std |
+| `ohl-net` | Valve queries/discovery, bounded svc payload reader, experimental prefix tracking | std |
 | `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
 | `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
 | `ohl-parser-worker` | hosted binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `std`; static musl on Linux, libSystem on macOS |

@@ -9721,3 +9721,38 @@ envelopes/timestamps were synthesized. [The protocol ledger](GOLDSRC_PROTOCOL.md
 records the evidence ID and limits. This partial spectator-proxy reference
 does not establish decoded sign-on, ordinary-player input/authentication,
 prediction, or gameplay interoperability.
+
+Follow-up work adds `ohl-net::message::MessageReader` for 15 published
+byte-aligned svc opcode layouts, with an explicit provisional LE/NUL
+primitive profile inferred from Valve query prose. Floats remain uninterpreted
+four-byte values; strings are borrowed opaque bytes; text, hashes and map
+fingerprints are redacted in Debug output. Malformed or unsupported messages
+stop permanently without skip/resynchronization, and commands are never
+executed. These synthetic checks do not validate captured gameplay payloads
+or a playable connection.
+
+An experimental prefix tracker is grounded in six controlled official
+HLDS/HLTV runs plus a held-out run. A high-water/bit-31-toggle model matched
+all 5,342 eligible opposite-word comparisons; seven unseen initial states
+were excluded, and a mirror model had 777 contradictions. Counter widths
+29/30 remain indistinguishable, a width guard is a project limit and bit 30
+is opaque. [The protocol ledger](GOLDSRC_PROTOCOL.md) records full-source
+digests, REA extraction-only evidence and the relay's synthesized-envelope
+limits. Header extent, reliability, wrap/reset rules, byte munging and normal
+player input/authentication/prediction remain unresolved; no transform or
+gameplay-connection result is claimed.
+
+Independent Rust replay of all seven reference traces matched 5,342 exact
+historical echo observations, excluded seven unobserved references and
+classified one duplicate and one stale prefix without model mismatches.
+Thirty-five typed connectionless errors left tracker state unchanged; the
+fixed 512-state history covered all eligible references in those runs.
+
+Before the final diagnostic opcode-redaction fix, the full locked workspace
+test fallback passed 3,280 tests with 38 ignored across 253 result summaries.
+After that diagnostic-only fix, the focused locked `ohl-net` run passed 52
+tests (15 svc, 14 prefix and 23 query tests), with one original-reference
+test ignored. Full workspace formatting, strict workspace/all-target Clippy
+and diff checks passed after the fix. The full suite was not repeated for
+the diagnostic change. Cargo-deny passed advisories, bans, licenses and
+sources with the existing configured warnings.
