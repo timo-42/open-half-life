@@ -8875,11 +8875,13 @@ and straight after a save loads).
 
 ## Original Half-Life multiplayer protocol research
 
-Reviewed 2026-10-16. [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md) records the
-original-wire compatibility requirement, evidence states, query formats,
-historical handshake outline, unresolved gameplay-channel details, and local
-reference-validation gates. This entry does not establish complete network
-or deathmatch compatibility.
+Reviewed 2026-10-16; query-codec and target review 2026-10-17.
+[GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md) records the current final pre-Steam
+WON target and all four original/Rust client-server pairings, evidence
+states, query formats, historical handshake outline, unresolved
+gameplay-channel details and reference-validation gates. Earlier Steam
+protocol-48 observations retain their original scope. This entry does not
+establish complete network or deathmatch compatibility.
 
 - [Valve Developer Community: Server queries](https://developer.valvesoftware.com/wiki/Server_queries),
   revision 333666, [archived 2023-08-31](https://web.archive.org/web/20230831123627id_/https://developer.valvesoftware.com/wiki/Server_queries):
@@ -8887,12 +8889,18 @@ or deathmatch compatibility.
   typed response fields, and GoldSource query splitting. The current page
   was inaccessible during this review; the archived article was readable.
 - [Valve Corporation: Server Queries (2004), public prose mirror](https://github.com/rocketsciencegg/qstat/blob/main/info/a2s.txt):
-  the typical UDP listen port and primitive field types cited by `ohl-net`.
-  Contemporary query layouts follow revision 333666 above; this historical
-  document is not an engine implementation source.
+  the typical UDP listen port, primitive field types and obsolete query
+  challenge request cited by `ohl-net`. The later `server` codecs use this
+  prose and revision 333666 above. Neither is a player-join specification or
+  proof of the selected pre-Steam runtime's query behavior.
 - [GameStat author: Half-Life Protocol](https://int64.org/docs/gamestat-protocols/halflife.html):
-  historical query descriptions and field tables. Its packet dumps are not
-  project fixtures, and its historical forms do not establish modern behavior.
+  the request/response Key tables and NUL-string comment support
+  `legacy::Profile::PublishedAscii`. The historical `Details` shape ends at
+  the secure flag and its optional mod metadata includes a full unused
+  string. LE/IEEE-754/strict UTF-8/canonical-boolean selections remain
+  explicit project assumptions; exact target-version applicability is
+  unverified. Published packet dumps are not fixtures or implementation
+  input, and the sample protocol value does not identify the selected build.
 - [Luigi Auriemma: Half-life fake players bug](https://seclists.org/bugtraq/2002/Jun/254):
   the author's 2002 prose report of the connectionless challenge/connect
   exchange. Its attached proof-of-concept was not used.
@@ -8908,19 +8916,27 @@ or deathmatch compatibility.
 - [Valve Steamworks: Distributing Your Dedicated Game Server](https://partner.steamgames.com/doc/sdk/uploading/distributing_gs),
   [User Authentication and Ownership](https://partner.steamgames.com/doc/features/auth),
   and [VDC GoldSrc server options](https://developer.valvesoftware.com/wiki/CHILLMODEA/Pages/Command_line_options_%28GoldSrc_Dedicated_Server%29):
-  reference distribution, genuine authentication boundary, and documented
-  launch settings. App-specific setup sources and version examples are
-  linked individually in the protocol ledger.
+  the historical Steam reference distribution, genuine Steam authentication
+  boundary and documented launch settings. These do not specify WON
+  admission. App-specific setup sources and version examples are linked
+  individually in the protocol ledger.
 - [Valve LLC: HLTV Documentation (2003), §§4 and 7](https://www.slipgate.de/download/HLTV-Readme.txt)
   and the author's [HLTV Admin FAQ](https://www.slipgate.de/hltv/hltv_FAQ_admins.html):
   primary public prose for the dedicated-server-supplied spectator proxy,
   server admission and documented launch controls. The bounded opaque proxy
   observation in the protocol ledger establishes no ordinary-player or
   decoded-channel compatibility; no HLTV implementation source was used.
+- [Valve: Half-Life 1.1.1.0 readme, public mirror](https://www.filefactory.org/tfc/file/776)
+  and [Steam public-release announcement, September 12, 2003](https://store.steampowered.com/oldnews/183):
+  client release chronology only. The readme's June 12, 2002 date helps
+  identify a candidate public-update reference; it does not establish an
+  observed player connection, protocol number or exact final Linux server
+  release. Static extraction is not execution or an interoperability pass.
 
 All implementation must remain independently authored under `CLEAN_ROOM.md`.
 Netchan framing/reliability, channel fragments, complete transform coverage,
-complete deltas, movement checksums, sign-on, and Steam ticket embedding remain evidence gaps.
+complete deltas, movement checksums, sign-on and selected-target WON admission
+remain evidence gaps; Steam ticket embedding is a separate historical gap.
 Neither a custom Rust protocol nor successful server queries closes them.
 
 The protocol ledger also records independently reviewed black-box

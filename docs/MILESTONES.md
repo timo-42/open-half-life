@@ -9786,3 +9786,42 @@ Final integration validation, `cargo test --workspace --locked`, passed
 3,294 tests with 38 ignored across 254 result summaries. Full workspace
 formatting, strict workspace/all-target Clippy and cargo-deny checks also
 passed, with no workspace-lock change.
+
+## Pre-Steam target and bidirectional query codecs (2026-10-17)
+
+The user selected the final pre-Steam WON Half-Life deathmatch experience.
+Acceptance requires an identified original-client/original-server baseline,
+Rust clients on original servers, original clients on Rust servers and
+Rust-to-Rust matches through that same original-wire implementation. Earlier
+Steam protocol-48 query, proxy, prefix and word-transform results remain
+historical evidence for their stated distributions; they do not verify this
+target. Public pre-Steam client/server packages are undergoing static
+extraction and provenance review. No new pre-Steam runtime or ordinary-player
+interoperability pass is recorded, and the ISO execution prohibition remains.
+
+`ohl-net::server` adds documented later A2S request decoding, response encoding
+and bounded GoldSrc query packetization. It does not own sockets, sender
+association, challenge/token policy or player admission. A separate
+`ohl-net::legacy` provides both query directions under the mandatory
+`Profile::PublishedAscii`: unterminated ASCII requests and separate historical
+response models. Its `Details` ends at the secure flag without inventing a
+bot count, and optional mod metadata retains the complete unused string.
+Selected integer, floating-point, text and boolean representations are
+explicit provisional choices pending target observations. Neither codec
+adds a playable host/join CLI. [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md)
+records sources, bounds and remaining transport gaps.
+
+Independent review found no blocking issue in the two codec units. The
+focused locked `ohl-net` run passed 98 tests with one explicit reference test
+ignored, including 16 new server and 17 historical-codec synthetic tests.
+Final `cargo test --workspace --locked` passed 3,327 tests with 38 ignored
+across 256 result summaries. Full workspace formatting, strict locked
+workspace/all-target Clippy and cargo-deny passed, with no lockfile change.
+No original-reference test was rerun for this checkpoint.
+
+The next gameplay milestone remains an ordinary player reaching
+active/spawned state with map/resources and delta bootstrap, followed by a
+validated input/no-op round trip on both cross-pairings. Admission, complete
+channel behavior, resource consistency, replication and prediction still
+need implementation and original-reference validation. Queries and a loaded
+local scene do not meet that milestone.

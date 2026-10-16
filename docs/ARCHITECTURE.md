@@ -2,13 +2,34 @@
 
 ## Original-protocol multiplayer work
 
+The selected target is the final pre-Steam WON deathmatch experience.
+Acceptance requires original-to-original baseline play, Rust clients on
+original servers, original clients on Rust servers, and Rust-to-Rust play
+through the same original-wire implementation. The protocol-48 Steam
+server/proxy observations below are historical evidence for their stated
+distributions, not validation of this target. No pairing has yet passed the
+ordinary-player gameplay interoperability milestone.
+
 `ohl-net` is a dependency-free leaf for original-protocol research. Its
 network I/O provides bounded UDP query handling, challenge retries,
 GoldSrc query-fragment reassembly and LAN discovery. It does not access game
-assets, ECS state, rendering, media import or Steam credentials. `ohl-app`
+assets, ECS state, rendering, media import or ownership credentials. `ohl-app`
 owns a bounded background query worker and passes display rows into the UI;
 query work is polled while menus or the console pause local gameplay.
 Worker errors and CLI output exclude server-provided text.
+
+Pure query codecs now serve both directions. `ohl-net::server` decodes later
+A2S requests, encodes the existing response model and packetizes bounded
+GoldSrc query responses. Token generation/expiry, sender checks, rate limits
+and challenge policy belong to its host. `ohl-net::legacy` instead requires
+`Profile::PublishedAscii` for historical ASCII requests and separate response
+models. Its `Details` ends at `secure_server`, without inventing a bot count;
+the optional mod metadata preserves its full unused string. Selected LE,
+IEEE-754 binary32, strict UTF-8 and canonical-boolean primitives remain
+unverified for the chosen pre-Steam runtime. These modules provide no
+gameplay sockets, player admission or historical query transport, and the
+CLI/browser continues to use the earlier A2S query client. Exact limits and
+sources are recorded in [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md).
 
 `ohl-net::message::MessageReader` separately reads an already isolated
 payload for 15 published byte-aligned svc opcode layouts. Callers explicitly
@@ -68,7 +89,7 @@ not part of the repository).
 | crate | responsibility | std? |
 | --- | --- | --- |
 | `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
-| `ohl-net` | Valve queries/discovery, bounded svc reader, experimental prefix/word codecs | std |
+| `ohl-net` | query clients/responders, historical ASCII codecs, bounded svc reader, experimental prefix/word codecs | std |
 | `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
 | `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
 | `ohl-parser-worker` | hosted binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `std`; static musl on Linux, libSystem on macOS |

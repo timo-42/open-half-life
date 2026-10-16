@@ -1,11 +1,13 @@
 # Original Half-Life multiplayer protocol evidence
 
-Research date: 2026-10-16. The requested result is a Rust deathmatch client
-and server using the original Half-Life network protocol. Compatibility means
+Research began 2026-10-16; target and query-codec review: 2026-10-17.
+The current requested result is the full final pre-Steam WON Half-Life
+deathmatch experience, with Rust client and server implementations using the
+original network protocol. Compatibility means
 exchanging the original wire messages with an identified reference runtime.
 A custom Rust-to-Rust transport, a working server browser, or a successful
 challenge response does not establish that result. Full deathmatch gameplay
-and original-server gameplay interoperability remain unverified.
+and original-client/server gameplay interoperability remain unverified.
 
 This ledger supplements [BEHAVIOR_SPEC.md](BEHAVIOR_SPEC.md). The
 [clean-room policy](CLEAN_ROOM.md) and [local data boundary](MEDIA_IMPORT.md)
@@ -43,6 +45,41 @@ build, and relevant settings in a reviewed local record before a comparison.
 Do not select an older packet layout merely by changing a protocol-number
 constant. A Source-format server-info response also does not turn GoldSrc
 gameplay into the Source engine's gameplay protocol.
+
+The user's correction selects the release family immediately before Steam,
+not the separately downloaded app-90 Steam server. Valve's mirrored
+[1.1.1.0 client readme][P15] is dated June 12, 2002; it is a candidate client
+reference, not a completed runtime comparison. The exact Linux server release,
+build and observed protocol still need verification. Valve's
+[Steam release announcement][P16] dates the public client release to
+September 12, 2003. Do not equate the selected WON target with a later Steam
+build by changing a protocol constant.
+
+All protocol-48 observations below remain historical evidence for their stated
+Steam server/proxy distributions. They do not verify the selected pre-Steam
+target. A separately acquired public full-client update is being inspected
+through static archive extraction and component-provenance checks. No new
+pre-Steam reference pass or player execution is recorded. The ISO execution
+prohibition remains unchanged.
+
+## Required client/server pairings
+
+All four pairings must run the original wire protocol and the complete
+deathmatch lifecycle:
+
+| Client | Server | Required comparison |
+| --- | --- | --- |
+| Original pre-Steam | Original pre-Steam | Identified baseline with matching local content and admission settings |
+| Rust | Original pre-Steam | Client sign-on, authoritative updates, input and complete match behavior |
+| Original pre-Steam | Rust | Server admission, bootstrap, validated commands and complete match behavior |
+| Rust | Rust | The same original-wire path, checked against both cross-pairings |
+
+The first gameplay milestone is an ordinary player reaching active/spawned
+state with the required map, resources and delta bootstrap, followed by a
+validated input/no-op round trip on both cross-pairings. Query success,
+proxy attachment or a reserved player slot does not meet it. Movement,
+combat, scoring, pickups, respawn, chat, prediction and map transitions then
+need their own comparisons across all pairings.
 
 ## Bounded query observation
 
@@ -259,16 +296,55 @@ The entire typed response layouts remain in the cited specification. Parser
 budgets, retry counts, deadlines, and rejection of unsupported layouts are
 project choices, not original-engine constants.
 
-For older targets, the GameStat author's [Half-Life Protocol][P2] separately
-documents the ASCII requests `details`, `rules`, and `players` after the
-four-byte all-ones prefix. Its `m` info response includes five strings
-(address, server name, map, game directory, description), player counts and
-protocol version, then server/mod metadata. Its players reply contains an
-index, terminated player name, signed 32-bit score, and 32-bit floating-point
-time per player. Its rules reply has a 16-bit count and string key/value
-pairs. These historical forms must be tested independently of modern queries.
+The GameStat author's [historical query tables][P2] separately describe
+unterminated ASCII `details`, `rules` and `players` requests after the
+four-byte all-ones prefix, with `m`, `E` and `D` reply families and
+NUL-terminated response strings. They do not identify an exact runtime
+release or establish every primitive representation.
 Do not commit the published packet dumps or observed server/player strings as
 fixtures; construct synthetic fields instead.
+
+## Bidirectional query-codec checkpoint (2026-10-17)
+
+[`ohl-net::server`](../crates/ohl-net/src/server.rs) adds pure
+`decode_request`, `encode_response` and `goldsrc_response_datagrams` APIs
+for the documented later A2S layouts. The obsolete query `W` request is
+separate from a player's textual join challenge. The encoder preserves the
+existing later `m` model, including its bot byte. Its host owns sender
+association, token generation/expiry, rate and challenge policy; the codec
+provides no sockets or player admission. The split packetizer has a project
+1,400-byte datagram limit, fifteen parts with 1,391 payload bytes each and
+caller-selected IDs whose high bit must be clear. A logical response can
+fit the 64 KiB encoder but exceed that split budget.
+
+[`ohl-net::legacy`](../crates/ohl-net/src/legacy.rs) separately provides
+request/response encoders and decoders requiring `Profile::PublishedAscii`.
+Its own `Details` ends at `secure_server`; absent bot counts remain absent.
+`Modification::unused` preserves a complete string. There is no implicit
+conversion to the later INFO model. `PlayerInfo` and `ServerRule` entries
+are reused within a separate response enum.
+
+That profile selects little-endian integers, IEEE-754 binary32 player time,
+strict UTF-8 response text and canonical boolean bytes 0/1. Those selections
+are not all established by the historical prose or verified for the chosen
+pre-Steam runtime. Requests have no terminator under this explicit profile;
+suffixes and later layouts are rejected without fallback. Bounds are project
+choices: 1,400 request bytes, 64 KiB logical responses, 4,096 UTF-8 bytes per
+string, 255 players and 1,024 rules. This module supplies no UDP, splitting,
+challenge exchange or gameplay channel; oversized logical responses need a
+separately evidenced transport.
+
+Both encoders preserve caller output on failure. New wrappers and errors
+redact packet/text data in automatic formatting. The focused locked crate run
+passed 98 tests with one explicit original-reference test ignored, including
+16 new server and 17 historical-codec synthetic tests. Independent review
+found no blocking issue; strict all-target crate Clippy, targeted formatting
+and diff checks passed. Final locked workspace tests passed 3,327 tests with
+38 ignored across 256 result summaries. Full workspace formatting, strict
+workspace/all-target Clippy and cargo-deny also passed; the lockfile is
+unchanged. These are codec checks, not a new original-runtime or
+playable-client result. The existing CLI/browser still uses the earlier A2S
+query client; no host/join gameplay CLI was added.
 
 ## Documented join outline
 
@@ -282,9 +358,10 @@ Half-Life through the stated 1.1.0.9 target, describes this sequence:
 4. Receive acceptance or rejection.
 
 That report documents the broad handshake and the default server port
-27015. It does not define a complete modern Steam connection request,
-ticket generation, exact acceptance layout, sign-on exchange, or gameplay
-channel. Do not generate fake ownership credentials, reuse another client's
+27015. It does not establish the exact final pre-Steam build's CD-key/WON
+admission, acceptance, sign-on exchange or gameplay channel. It also does not
+define a modern Steam ticket exchange. Do not generate fake ownership
+credentials, reuse another client's
 tickets, or interpret an accepted connectionless request as a spawned player.
 
 ## Server-message evidence and remaining gaps
@@ -344,16 +421,22 @@ close an evidence gap:
 - Complete sign-on transitions and map/resource consistency checks; public
   game-message registration, scoring, combat, respawn, map changes, and
   intermission behavior for the selected deathmatch version.
-- Current Steam authentication, ticket transport, ownership checks, and
-  server admission. Valve's [authentication documentation][P7] explains
-  genuine session tickets but does not specify GoldSrc's on-wire embedding.
-  It is not evidence that a pure Rust client already authenticates.
+- Final pre-Steam CD-key/WON admission and its LAN behavior. Historical
+  challenge/connect prose does not supply a complete credential or join
+  implementation. Steam authentication is a separate historical-reference
+  boundary: Valve's [ticket documentation][P7] does not specify WON admission
+  or GoldSrc's ticket embedding.
 
 Do not fill these gaps using Quake netchan documentation, a Source protocol,
 automated summaries of engine source, or a guessed XOR/munging algorithm.
 Such substitution would not verify original Half-Life compatibility.
 
-## Obtaining a separate black-box reference
+## Historical Steam reference setup
+
+This recipe documents the already observed protocol-48 research reference.
+It does not obtain the user's selected pre-Steam runtime. A public pre-Steam
+client update and Linux server distribution are being checked separately;
+no player join or replacement reference pass has completed.
 
 Valve's [dedicated-server distribution documentation][P8] describes anonymous
 SteamCMD server downloads without a signed-in Steam client. The [SteamCMD
@@ -409,12 +492,15 @@ This is a **project plan**, not a statement of completed compatibility:
    time. Compare only documented framing and fields. Keep payloads local;
    export reviewed pass/fail categories and protocol/version facts only.
    A project-to-project query test is not an interoperability result.
-3. Establish a legal original client reference and observe a normal local
+3. Identify the final pre-Steam client/server reference pair and observe a normal local
    connection. Separate query challenges, join challenges, acceptance,
    sign-on, and actual play. Keep genuine authentication opaque and local.
-4. Close the listed channel/munging gaps with documented or observed
+4. Close the selected version's channel/munging gaps with documented or observed
    evidence before enabling a network channel. Then validate original
-   client to Rust server and Rust client to original server separately.
+   client to Rust server and Rust client to original server separately. Reuse
+   that original-wire implementation for Rust-to-Rust tests; retain the
+   original-to-original baseline rather than allowing matching Rust bugs to
+   define compatibility.
 5. Validate channel reliability with bounded local packet loss, duplication,
    reordering, and reconnects. Derive all limits from target evidence or
    identify them explicitly as project constraints.
@@ -444,3 +530,5 @@ protocol.
 [P12]: https://developer.valvesoftware.com/wiki/CHILLMODEA/Pages/Command_line_options_%28GoldSrc_Dedicated_Server%29
 [P13]: https://www.slipgate.de/download/HLTV-Readme.txt
 [P14]: https://www.slipgate.de/hltv/hltv_FAQ_admins.html
+[P15]: https://www.filefactory.org/tfc/file/776
+[P16]: https://store.steampowered.com/oldnews/183
