@@ -2,12 +2,14 @@
 //!
 //! The caller explicitly selects the dated reference cohort. The protocol-48
 //! profile was observed on 2026-10-16 between official HLTV and HLDS, app 90,
-//! build 15961496. The separate protocol-46 profile uses the Linux 3.1.1.1 base
-//! plus d-update spectator cohort observed 2026-10-17; native output reported
-//! protocol 46/version 3.1.1.1 without an exact build. Only the
-//! proxy-to-server direction with first-word bit 30 clear was tested. This is
-//! not a server-to-client transform, a complete header, a message boundary, an
-//! authenticated channel, or evidence of ordinary-player interoperability.
+//! build 15961496, only in the HLTV-to-HLDS direction. The protocol-46 profiles
+//! use the Linux 3.1.1.1 base plus d-update spectator cohort observed 2026-10-17;
+//! native output reported
+//! protocol 46/version 3.1.1.1 without an exact build. Separate explicit selectors
+//! cover HLTV-to-HLDS and HLDS-to-HLTV with first-word bit 30 clear. No reverse
+//! protocol-48 profile is established. Header extent, message boundaries and
+//! authenticated channels remain unresolved, as does ordinary-player
+//! interoperability.
 //!
 //! The independently authored mathematical specification is recorded in the
 //! repository's `docs/GOLDSRC_TRANSFORM.md`. Its functional coefficients come
@@ -22,12 +24,25 @@
 //! and all 16 fully known mask positions). Two earlier command-sized candidates
 //! were excluded. Complete-capture SHA-256 is
 //! `711e5f5fce9d2a9cc3432332f2aa7408716dd83fa543e7214813fcb01e29da2c`.
-//! Known text occupied absolute UDP offsets 14 through 116 at most; no known
+//! Forward known text occupied absolute UDP offsets 14..117 exclusive; no known
 //! text entered a partial-word tail. This is a synthesized-envelope application
 //! relay observation, not NIC acquisition or evidence for every protocol-46 peer.
 //!
-//! Initial offsets 8..23 for protocol 48 and 8..13 for protocol 46, higher
-//! guarded counters, other key bytes and longer periods extrapolate the model.
+//! The separately reviewed protocol-46 HLDS-to-HLTV holdout predeclared 60 new
+//! texts of 24..31 bytes and their exact windows before one native pair started.
+//! All 60 full texts appeared in both endpoint consoles and matched the unchanged
+//! model at absolute offset 18, ending at offsets 42..49 exclusive: 1,642 known
+//! bytes, 358 wholly known words, seven whole mask positions, 31 byte positions
+//! and 60 distinct low-counter bytes. Complete-capture SHA-256 is
+//! `c7fd6f782eca67abe22a54f8d2a00244320bdcd5203f71a073aa9cb3f40eaae9`.
+//! No known text entered a partial-word tail. A preceding pilot's 63-byte prefix
+//! endpoints were measured after that run; they are separate from this holdout.
+//!
+//! Initial offsets 8..23 for protocol-48 forward, 8..13 for protocol-46 forward
+//! and 8..17 for protocol-46 reverse, other positions outside each measured
+//! cohort, higher guarded counters, other key bytes and longer periods
+//! extrapolate the model. The prefix selector cannot establish direction;
+//! callers must select it explicitly without automatic detection or fallback.
 //! The 1400-byte datagram cap and counter guard are project bounds. They do not
 //! establish compatibility throughout those ranges. Incomplete final words
 //! were not validated with held-out known text and remain explicitly opaque.
@@ -79,6 +94,11 @@ pub enum WordTransformProfile {
     /// Linux base plus d-update HLTV-to-HLDS cohort, observed 2026-10-17.
     /// Protocol 46/native version 3.1.1.1; not a normal-player or server direction.
     ExperimentalProtocol46Linux3111dHltvToHlds,
+    /// Linux base plus d-update HLDS-to-HLTV cohort, observed 2026-10-17.
+    /// Explicit reverse direction; the shared protocol-46 prefix cannot prove it.
+    /// Known text at 18..49 exclusive; other positions and unmeasured keys infer
+    /// the model. No ordinary-player, tail, framing or protocol-48 reverse claim.
+    ExperimentalProtocol46Linux3111dHldsToHltv,
 }
 
 /// Complete transformed words, with explicit byte access and redacted Debug.
@@ -186,7 +206,8 @@ fn validate_context(
         WordTransformProfile::ExperimentalProtocol48HltvToHlds => {
             PrefixProfile::ExperimentalProtocol48
         }
-        WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds => {
+        WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds
+        | WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltv => {
             PrefixProfile::ExperimentalProtocol46Linux3111d
         }
     };
@@ -208,7 +229,8 @@ fn validate_context(
 /// 30 or either bit 31. The original prefix and tail are never written to output.
 /// Trailing bytes remain borrowed, opaque and separate. Errors preserve all
 /// output bytes, and success writes only the returned complete-word region.
-/// The prefix must belong to the selected word profile's observation cohort.
+/// The prefix protocol selector must match. It does not identify direction;
+/// the caller explicitly selects the word profile's observation cohort.
 pub fn decode_full_words<'output, 'packet>(
     profile: WordTransformProfile,
     prefix: PacketPrefix<'packet>,
@@ -249,7 +271,8 @@ pub fn decode_full_words<'output, 'packet>(
 /// be a multiple of four bytes and fit after the selected prefix within the
 /// shared datagram cap. No partial tail or padding is accepted. Errors preserve
 /// all output bytes; success writes exactly the returned encoded-word region.
-/// The prefix must belong to the selected word profile's observation cohort.
+/// The prefix protocol selector must match; direction remains caller-selected.
+/// This mathematical inverse does not establish that an endpoint consumes it.
 pub fn encode_full_words<'output>(
     profile: WordTransformProfile,
     prefix_context: PacketPrefix<'_>,

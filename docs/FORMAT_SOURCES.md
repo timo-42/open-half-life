@@ -8947,9 +8947,15 @@ observed zero. It preserves the byte without assigning bot semantics;
 `PublishedAscii` remains strict. Empty Players and a 48-rule reply were also
 observed; a subsequent production-profile run passed all three query families
 as post-implementation conformance, without populated player-time verification.
-Original payloads, names and rule strings are not fixtures. Patch-only launcher
-startup is separate evidence and establishes no engine load, authentication
-or sign-on.
+Original payloads, names and rule strings are not fixtures. The explicit
+`query_legacy` client uses these published requests and observed profiles;
+its absolute deadline (at most 30 seconds), 64-datagram budget and 1,400-byte
+cap are project choices. It does not add fallback, challenge or split handling.
+The public opt-in `--query-profile won46` passed one original-server Details
+query; the ledger records the whole capture and current executable digests,
+source/build association limit and metadata-only scope. Default/A2S behavior
+and the A2S-only browser retain their scope. Patch-only launcher startup is
+separate evidence and establishes no engine load, authentication or sign-on.
 
 All implementation must remain independently authored under `CLEAN_ROOM.md`.
 Netchan framing/reliability, channel fragments, complete transform coverage,
@@ -8979,16 +8985,38 @@ prose is not claimed as the source of these observed functional parameters.
 
 Separate 2026-10-17 protocol-46 Linux base-plus-d-update spectator observations
 support `PrefixProfile::ExperimentalProtocol46Linux3111d` in both directions
-and `WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds` only
-proxy-to-server with first bit 30 clear. Independent review reproduced both
-prefix cohorts and 60 known synthetic texts without fitting the historical
-model. Whole-source hashes, coverage/exclusions and synthesized-relay limits
-are in the protocol ledger; the single coefficient table is unchanged.
+and the initial `WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds`
+proxy-to-server profile with first bit 30 clear. A separate
+`ExperimentalProtocol46Linux3111dHldsToHltv` selector now covers the measured
+reverse spectator direction. Its pilot's 63-byte endpoint was selected after
+the run; the fresh check froze all 60 texts and fixed windows before launch,
+matching 1,642 known bytes across seven whole mask slots and 31 byte positions.
+No coefficients were fitted or changed. Whole-source hashes, coverage and
+cleanup exclusions are in the ledger/specification; original content remains
+private. Direction is caller-selected, with no reverse protocol-48 profile.
 Production-profile replay is post-implementation conformance, not a new
-held-out discovery. Original payloads and recovered strings remain private.
+held-out discovery or proof of unknown plaintext, tails or player behavior.
 
 The current ordinary-player gate is `UnclassifiedPreEngineInputDialog`:
 fresh short-C-path/XP64 Wine starts observed no engine/game-client load or
-client protocol and no traffic at the owned observation endpoint. No
-missing-key or missing-data cause is established. This gate supplies no
-authentication, sign-on or gameplay result.
+client protocol and no traffic at the owned observation endpoint. A later
+file/loader trace and one exact-byte public-patch asset location experiment
+resolved a specific lookup but left all 28 compared UI category/length fields
+unchanged, with the same gate. No missing-key or missing-data cause is
+established. Raw identities, asset contents, traces and UI text stay private;
+this supplies no authentication, sign-on or gameplay result.
+
+## Release ZIP dependency maintenance (2026-10-17)
+
+The packaging-only `xtask` writer pins [`zip` 9.0.4](https://crates.io/api/v1/crates/zip/9.0.4)
+(MIT, Rust 1.88 minimum), with default features disabled and only
+`deflate-flate2` enabled. It shares the explicitly selected
+`flate2/rust_backend` (`miniz_oxide`); no C compression backend is added.
+Its required closure adds [`nix` 0.31.3](https://crates.io/api/v1/crates/nix/0.31.3)
+(MIT, Rust 1.69) and [`typed-path` 0.12.3](https://crates.io/api/v1/crates/typed-path/0.12.3)
+(MIT OR Apache-2.0, Rust 1.65). Other dependency versions remain unchanged.
+The update resolves the maintainer's
+[privileged-permission](https://github.com/zip-rs/zip2/security/advisories/GHSA-vv5m-jxxh-4627),
+[symlink-target](https://github.com/zip-rs/zip2/security/advisories/GHSA-4v9h-p7m9-rh26)
+and [permission-through-symlink](https://github.com/zip-rs/zip2/security/advisories/GHSA-4684-h2q9-2vcp)
+advisories. ZIP extraction is not part of the game runtime.

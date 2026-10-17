@@ -9795,9 +9795,9 @@ Rust clients on original servers, original clients on Rust servers and
 Rust-to-Rust matches through that same original-wire implementation. Earlier
 Steam protocol-48 query, proxy, prefix and word-transform results remain
 historical evidence for their stated distributions; they do not verify this
-target. Public pre-Steam client/server packages are undergoing static
-extraction and provenance review. No new pre-Steam runtime or ordinary-player
-interoperability pass is recorded, and the ISO execution prohibition remains.
+target. Subsequent public pre-Steam reference observations are recorded below;
+no ordinary-player interoperability pass is recorded, and the ISO execution
+prohibition remains.
 
 `ohl-net::server` adds documented later A2S request decoding, response encoding
 and bounded GoldSrc query packetization. It does not own sockets, sender
@@ -9886,8 +9886,8 @@ conformance, without fitting. Six new synthetic tests bring focused locked
 targeted formatting and diff checks passed. Earlier workspace totals retain
 their checkpoint scope.
 
-The player reference gate is now `UnclassifiedPreEngineInputDialog` after
-two fresh short-C-path starts, including Wine's XP64 setting, with unchanged
+The player reference gate is `UnclassifiedPreEngineInputDialog` after
+bounded fresh short-C-path starts, including Wine's XP64 setting, with unchanged
 staged hashes.
 No engine/game-client load or client protocol was observed, and no traffic
 reached the owned observation endpoint. No missing-key/data cause is
@@ -9922,3 +9922,73 @@ summaries before the final narrow pose-move conversion fix. Final workspace
 integration validation remains separate. These project-synthetic results
 do not validate original-world replication or any of the four gameplay
 pairings.
+
+### Strict historical query API and public CLI
+
+The typed `query_legacy(address, timeout, profile, request)` client now sends
+one historical ASCII request through connected UDP and returns the separate
+legacy response model. A nonzero absolute deadline of at most 30 seconds,
+64 received datagrams and a 1,400-byte cap are project budgets. Wrong-kind
+replies share them; malformed replies and splits fail without conversion,
+profile fallback or challenge exchange.
+
+`--query-server IP[:PORT] --query-profile won46` explicitly selects
+`ObservedLinux3111d` Details before media import or GUI startup. Omitted or
+`a2s` profile preserves A2S queries; the browser stays A2S-only. Profile
+selection requires a target and query mode rejects media/play, scripted
+capture, profiling and development-viewer conflicts. CLI output contains
+only protocol, players, capacity and password status.
+
+One public CLI invocation passed against the verified original Linux stage:
+protocol 46, players 0, capacity 4, password false. Server and CLI exited 0;
+owned cleanup completed in 1,228 ms. Four synthetic-envelope relay records
+form two equal boundary pairs, with the exact unterminated request and a
+strict 60-byte observed-profile reply. All 707 native hashes/modes, six
+reviewed source hashes and the currently bound CLI digest stayed unchanged.
+No build-time executable digest was retained; the
+[ledger](GOLDSRC_PROTOCOL.md#strict-historical-query-api-and-cli) records this
+association limit and complete capture/executable hashes. This verifies
+metadata queries only; all four gameplay pairings remain pending.
+
+The separate original-player file/loader probe and one exact-byte public-patch
+asset location experiment resolved a specific failed lookup but left all
+28 compared UI category/length fields unchanged. No engine/client load or
+owned-endpoint traffic appeared. `UnclassifiedPreEngineInputDialog` remains,
+with no missing-key/data diagnosis, unknown input or further remedy.
+
+### Explicit protocol-46 reverse word profile
+
+`ExperimentalProtocol46Linux3111dHldsToHltv` shares the existing mathematical
+coefficients and protocol-46 prefix with the forward selector. Direction is
+explicitly caller-selected; a prefix cannot establish it. No reverse
+protocol-48 selector, message framing or transport integration was added.
+First bit 30 remains excluded and partial tails remain opaque.
+
+The native pilot measured 60 matching 63-byte prefixes after the run. A fresh
+predeclared check matched all 60 full texts of 24..31 bytes at absolute offset
+18: 1,642 known bytes, 358 wholly known words, seven whole mask slots,
+31 byte positions and 60 low-counter bytes, without fitting. Its 1,547 relay
+records comprise 773 equal pairs and one retained cleanup ingress with an
+explicit failed send. Twenty-five first-bit-30 records were excluded;
+258 selected unmatched records and 104 opaque tail bytes remain unvalidated.
+The [ledger](GOLDSRC_PROTOCOL.md#protocol-46-reverse-known-text) and
+[specification](GOLDSRC_TRANSFORM.md#reverse-pilot-and-predeclared-full-text-check)
+record exact hashes, windows, coverage and measurement limits.
+
+Production-profile replay passed 60 known-text, candidate whole-word buffer,
+inverse, sentinel and tail-preservation checks as post-implementation
+conformance. Final focused validation passed 123 `ohl-net` tests with one
+reference ignored, 183 `ohl-app` tests with four ignored and one targeted
+`dev-tools` conflict test. Strict crate Clippy, formatting and diff checks
+passed.
+
+Final checkpoint validation after the packaging ZIP update passed 3,373 tests
+with 38 ignored across 258 result summaries using
+`cargo test --workspace --locked`. Workspace formatting and strict locked
+workspace/all-target Clippy passed. The post-update cargo-deny check passed
+advisories, bans, licenses and sources, retaining 18 `duplicate` warnings and
+one `license-not-encountered` warning. `Cargo.lock` changed only for ZIP 9.0.4
+and its required closure, documented in
+[the packaging provenance note](FORMAT_SOURCES.md#release-zip-dependency-maintenance-2026-10-17).
+These project checks add no ordinary-player interoperability result.
+Earlier full-workspace totals retain their original checkpoint scope.

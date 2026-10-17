@@ -33,9 +33,19 @@ the published fields and one opaque extension byte, guarded to protocol 46.
 The byte has no bot interpretation or implicit default; `PublishedAscii`
 retains its exact boundary. Only empty Players and one 48-rule cohort have
 been observed, without populated-player float verification. These modules
-provide no gameplay sockets, player admission or historical query transport.
-The CLI/browser continues to use the earlier A2S query client. Exact limits and
-sources are recorded in [GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md).
+provide no gameplay sockets or player admission. The separate typed
+`query_legacy(address, timeout, profile, request)` API now sends one historical
+request with a connected UDP socket, strict selected-profile decoding, an
+absolute deadline of at most 30 seconds, 64 received datagrams and a 1,400-byte
+cap. Wrong-kind replies share those budgets; malformed replies and splits
+fail without fallback or challenge exchange. These are project limits.
+
+`--query-server IP[:PORT] --query-profile won46` explicitly selects
+`ObservedLinux3111d` Details before media import or GUI startup. Omitted or
+`a2s` profile retains A2S behavior, and the browser remains A2S-only. CLI
+output contains four scalar facts; native protocol-46 verification passed
+without establishing a gameplay connection. Exact limits and evidence are in
+[GOLDSRC_PROTOCOL.md](GOLDSRC_PROTOCOL.md).
 
 `ohl-net::message::MessageReader` separately reads an already isolated
 payload for 15 published byte-aligned svc opcode layouts. Callers explicitly
@@ -58,23 +68,28 @@ and the authoritative adapter.
 
 `ohl-net::word_transform` is a separate experimental complete-word operation
 with a fixed mathematical model derived from synthetic-text black-box
-experiments. Explicit `ExperimentalProtocol46Linux3111dHltvToHlds` and
-historical `ExperimentalProtocol48HltvToHlds` profiles share one unchanged
-coefficient table. Each requires its matching prefix profile and first bit
-30 clear; a mismatch fails before output changes. The operation returns
-candidate decoded words separately from an opaque original tail and rejects
+experiments. Explicit protocol-46 `ExperimentalProtocol46Linux3111dHltvToHlds`
+and `ExperimentalProtocol46Linux3111dHldsToHltv` selectors share the unchanged
+coefficient table with historical `ExperimentalProtocol48HltvToHlds`.
+Both protocol-46 directions require the protocol-46 prefix; the prefix cannot
+identify direction, which the caller must select from its peer association.
+First bit 30 must be clear, and a foreign prefix fails before output changes.
+There is no reverse protocol-48 selector or direction detection. The operation
+returns candidate decoded words separately from an opaque original tail and rejects
 partial-word encoding. It constructs no prefix,
 does not send packets and does not feed the message reader. The
 [mathematical specification](GOLDSRC_TRANSFORM.md) distinguishes measured
-coverage from inferred use at other offsets/counters and leaves tail and
-other-direction semantics open.
+coverage from inferred use at other offsets/counters and leaves tails and
+untested runtime/direction combinations open.
 
 The ordinary-player reference remains gated by
 `UnclassifiedPreEngineInputDialog` after fresh short-C-path/XP64 Wine starts.
 No engine/game-client load or client protocol was observed; no traffic
 reached the owned observation endpoint. A missing-key or missing-data cause
-is unestablished. All four gameplay pairings and the player sign-on milestone
-remain pending.
+is unestablished. One exact-byte public-patch asset location experiment
+resolved its specific failed lookup but left all 28 compared UI category/length
+fields unchanged, with no engine/client load or owned-endpoint traffic.
+All four gameplay pairings and the player sign-on milestone remain pending.
 
 `ohl-engine::deathmatch::Deathmatch` is a separate authoritative gameplay
 adapter over the existing skirmish simulation. It has no socket or dependency

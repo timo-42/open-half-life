@@ -41,7 +41,10 @@ pub mod server;
 mod split;
 pub mod word_transform;
 
-pub use client::{DiscoveredServer, discover_lan, query_info, query_players, query_rules};
+pub use client::{
+    DiscoveredServer, LegacyQueryError, discover_lan, query_info, query_legacy, query_players,
+    query_rules,
+};
 pub use codec::{decode_response, encode_request};
 pub use split::GoldSrcReassembler;
 

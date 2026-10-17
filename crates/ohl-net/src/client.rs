@@ -1,8 +1,8 @@
-//! Bounded UDP query transport; no gameplay connection is established.
+//! Bounded, explicitly selected UDP query transports; no gameplay connection.
 
 use std::{
     collections::{BTreeMap, btree_map::Entry},
-    io,
+    fmt, io,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     time::{Duration, Instant},
 };
@@ -10,13 +10,62 @@ use std::{
 use crate::{
     DEFAULT_QUERY_PORT, Error, GoldSrcReassembler, MAX_CHALLENGES, MAX_DATAGRAM_BYTES,
     MAX_QUERY_TIMEOUT, PlayerInfo, Query, Response, ServerInfo, ServerRule, decode_response,
-    encode_request,
+    encode_request, legacy,
 };
 
 const MAX_QUERY_DATAGRAMS: usize = 64;
 const MAX_DISCOVERY_DATAGRAMS: usize = 512;
 const MAX_DISCOVERY_SERVERS: usize = 64;
 const MAX_PEER_DATAGRAMS: usize = 32;
+
+/// Fixed legacy-query diagnostics; no socket text, addresses or packets retained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LegacyQueryError {
+    InvalidTimeout,
+    Timeout,
+    Socket,
+    DatagramLimit,
+    DatagramBudget,
+    SplitResponse,
+    Codec(legacy::Error),
+}
+
+impl fmt::Display for LegacyQueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidTimeout => "legacy query timeout is outside supported bounds",
+            Self::Timeout => "legacy server query deadline expired",
+            Self::Socket => "legacy query socket operation failed",
+            Self::DatagramLimit => "legacy query datagram exceeds supported bounds",
+            Self::DatagramBudget => "legacy query datagram budget exhausted",
+            Self::SplitResponse => "legacy split query replies are unsupported",
+            Self::Codec(_) => "legacy query response does not fit the selected codec",
+        })
+    }
+}
+
+impl std::error::Error for LegacyQueryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codec(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<legacy::Error> for LegacyQueryError {
+    fn from(error: legacy::Error) -> Self {
+        Self::Codec(error)
+    }
+}
+
+fn legacy_transport_error(error: &Error) -> LegacyQueryError {
+    if matches!(error, Error::Timeout) {
+        LegacyQueryError::Timeout
+    } else {
+        LegacyQueryError::Socket
+    }
+}
 
 /// A validated reply tied to its actual UDP sender, never its claimed address.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,25 +105,73 @@ pub fn query_rules(address: SocketAddr, timeout: Duration) -> Result<Vec<ServerR
     }
 }
 
+/// Send one exact ASCII request using an explicitly selected historical profile.
+///
+/// Returns the separate historical response model, with no A2S conversion,
+/// fallback, challenge exchange or gameplay connection. Only single datagrams
+/// up to 1,400 bytes are supported; split replies fail explicitly. A connected
+/// socket filters other peers, and the shared absolute deadline (at most 30
+/// seconds) and 64-datagram budget cover wrong-kind replies as well. Malformed
+/// replies from the selected peer fail without attempting another profile.
+pub fn query_legacy(
+    address: SocketAddr,
+    timeout: Duration,
+    profile: legacy::Profile,
+    request: legacy::Request,
+) -> Result<legacy::Response, LegacyQueryError> {
+    let deadline = deadline(timeout).map_err(|_| LegacyQueryError::InvalidTimeout)?;
+    let mut request_bytes = [0; MAX_DATAGRAM_BYTES];
+    let encoded = legacy::encode_request(profile, request, &mut request_bytes)?;
+    let socket = connected_socket(address).map_err(|error| legacy_transport_error(&error))?;
+    send_connected(&socket, encoded.as_bytes(), deadline)
+        .map_err(|error| legacy_transport_error(&error))?;
+    // The extra byte distinguishes an oversized datagram from a valid full one.
+    let mut datagram = [0; MAX_DATAGRAM_BYTES + 1];
+    for _ in 0..MAX_QUERY_DATAGRAMS {
+        let Some(length) = receive_connected(&socket, address, &mut datagram, deadline)
+            .map_err(|error| legacy_transport_error(&error))?
+        else {
+            continue;
+        };
+        if length > MAX_DATAGRAM_BYTES {
+            return Err(LegacyQueryError::DatagramLimit);
+        }
+        let packet = &datagram[..length];
+        if packet.starts_with(&crate::SPLIT_HEADER) {
+            return Err(LegacyQueryError::SplitResponse);
+        }
+        let response = legacy::decode_response(profile, packet)?;
+        if legacy_response_matches(request, &response) {
+            remaining(deadline).map_err(|error| legacy_transport_error(&error))?;
+            return Ok(response);
+        }
+    }
+    Err(LegacyQueryError::DatagramBudget)
+}
+
+fn legacy_response_matches(request: legacy::Request, response: &legacy::Response) -> bool {
+    matches!(
+        (request, response),
+        (
+            legacy::Request::Details,
+            legacy::Response::Details(_) | legacy::Response::ObservedDetails(_)
+        ) | (legacy::Request::Players, legacy::Response::Players(_))
+            | (legacy::Request::Rules, legacy::Response::Rules(_))
+    )
+}
+
 fn query(address: SocketAddr, timeout: Duration, kind: Query) -> Result<Response, Error> {
     let deadline = deadline(timeout)?;
-    let socket = UdpSocket::bind(if address.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    })?;
-    socket.connect(address)?;
+    let socket = connected_socket(address)?;
     send_connected(&socket, &encode_request(kind, None), deadline)?;
     let mut challenges = 0;
     let mut reassembler = GoldSrcReassembler::new();
     // One extra byte detects oversized UDP datagrams even when recv truncates.
     let mut datagram = [0; MAX_DATAGRAM_BYTES + 1];
     for _ in 0..MAX_QUERY_DATAGRAMS {
-        socket.set_read_timeout(Some(remaining(deadline)?))?;
-        let (length, sender) = socket.recv_from(&mut datagram).map_err(receive_error)?;
-        if sender != address {
+        let Some(length) = receive_connected(&socket, address, &mut datagram, deadline)? else {
             continue;
-        }
+        };
         let Some(packet) = reassembler.push(&datagram[..length])? else {
             continue;
         };
@@ -228,6 +325,27 @@ fn remaining(deadline: Instant) -> Result<Duration, Error> {
     } else {
         Ok(left)
     }
+}
+
+fn connected_socket(address: SocketAddr) -> Result<UdpSocket, Error> {
+    let socket = UdpSocket::bind(if address.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    })?;
+    socket.connect(address)?;
+    Ok(socket)
+}
+
+fn receive_connected(
+    socket: &UdpSocket,
+    address: SocketAddr,
+    datagram: &mut [u8],
+    deadline: Instant,
+) -> Result<Option<usize>, Error> {
+    socket.set_read_timeout(Some(remaining(deadline)?))?;
+    let (length, sender) = socket.recv_from(datagram).map_err(receive_error)?;
+    Ok((sender == address).then_some(length))
 }
 
 fn send_connected(socket: &UdpSocket, bytes: &[u8], deadline: Instant) -> Result<(), Error> {

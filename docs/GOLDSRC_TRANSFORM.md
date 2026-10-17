@@ -20,8 +20,9 @@ The separately measured protocol-46 cohort below has its own profile and
 uses the unchanged mathematical operation; these historical observations
 are not evidence for the user's selected pre-Steam target.
 
-The measured direction is the official spectator proxy to its server, for
-ordinary selected packets with first-word bit 30 clear. The experimental
+The historical protocol-48 measurement covers spectator proxy to server.
+Separate protocol-46 cohorts below cover both spectator directions, for
+selected packets with first-word bit 30 clear. The experimental
 prefix profile projects low-30-bit candidate counters and requires both to
 be below the project guard 2^29. Counter width and wrap remain unresolved.
 The low byte used below belongs to the first candidate counter; no reliable
@@ -102,6 +103,11 @@ The `ohl-net::word_transform` API requires an explicit word profile and a
 | --- | --- |
 | `ExperimentalProtocol48` | `ExperimentalProtocol48HltvToHlds` |
 | `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHltvToHlds` |
+| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHldsToHltv` |
+
+The protocol-46 prefix cannot establish direction. Callers explicitly select
+it from their known peer association; there is no direction detection,
+fallback or reverse protocol-48 selector.
 
 `WordTransformError::ProfileMismatch` rejects a foreign prefix before output
 changes. `decode_full_words` writes only complete candidate words into
@@ -115,9 +121,10 @@ Second-word bit 30 and both bit-31 flags are not key inputs; this assigns
 them no transform or channel meaning.
 
 Applying the candidate operation to initial offsets 8 through 23 for the
-historical protocol-48 cohort, or 8 through 13 for protocol 46, extrapolates
-measured known text. Higher counters, other low-counter bytes, longer bodies
-and further period repetitions are also inferred applicability. Synthetic-text
+historical protocol-48 cohort, 8 through 13 for protocol-46 forward, or
+8 through 17 for protocol-46 reverse extrapolates measured known text. Higher
+counters, other low-counter bytes, longer bodies and further period repetitions
+are also inferred applicability. Synthetic-text
 windows do not verify every byte range to which a generic word operation
 can be applied. In particular, the bytes immediately after the selected
 prefix may include additional header or framing data.
@@ -217,8 +224,8 @@ reported native version 3.1.1.1/protocol 46, without a confirmed build.
 [The protocol ledger](GOLDSRC_PROTOCOL.md#protocol-46-spectator-packet-cohorts)
 records its distribution hashes, baseline and synthetic-run capture digests,
 warnings and relay limits. Both spectator directions support only the
-selected prefix model; the word profile covers proxy-to-server packets
-with first bit 30 clear.
+selected prefix model; the initial forward word profile covers proxy-to-server
+packets with first bit 30 clear.
 
 The existing frozen model matched 60/60 unique authored texts, lengths
 96..103, totaling 5,962 known bytes at 60 distinct low-counter bytes. All
@@ -236,6 +243,63 @@ plaintext verification. The focused locked crate run passed 111 tests with
 one reference test ignored, including six new synthetic profile/association
 tests; strict crate Clippy, targeted formatting and diff checks passed.
 
+### Reverse pilot and predeclared full-text check
+
+The same Linux base-plus-d-update pair then supplied server-originated text.
+The pilot matched 60 authored prefixes of 63 bytes at absolute offset 18:
+3,780 known bytes, 900 wholly known words, 15 whole mask slots, 63 byte
+positions and 60 low-counter bytes. Its endpoint was measured after the run;
+it did not prove full intended delivery or a general 63-byte truncation rule.
+The whole capture SHA-256 is
+`5d00c593ff25bbd98bd31547bd96b28827a90259b2209de789cb170ee5ed4508`.
+It contains 1,559 relay records: 779 equal pairs and one retained cleanup
+ingress with an explicit send failure, without successful forwarding.
+
+A fresh run predeclared 60 distinct texts, lengths 24..31, with the 16-byte
+marker at `[18,34)` and full-text start 18 before native launch. All 60 full
+texts appeared in both endpoint consoles and matched the unchanged frozen
+operation, ending at offsets 42..49 exclusive. Coverage is 1,642 known bytes,
+358 wholly known words, seven whole mask slots, 31 byte positions and
+60 distinct low-counter bytes, with no fitting, contradictions or
+missing/duplicate events. Text length residues have 15 samples each; matched
+packet residues 0/1/2/3 have 15/16/14/15. Whole-capture SHA-256 is
+`c7fd6f782eca67abe22a54f8d2a00244320bdcd5203f71a073aa9cb3f40eaae9`.
+
+That run has 1,547 relay records: 773 equal pairs and one separately retained
+proxy-to-server cleanup ingress with `connection_refused`, no successful
+forwarding or delivery proof. Three connectionless/split and 25 first-bit-30
+server-to-proxy records were excluded. The 318 selected candidates include
+60 known-text matches and 258 retained unmatched records; all 104 partial-tail
+bytes remain unknown. Known text reaches no partial tail. Envelopes and
+call-level timestamps are synthesized by an application relay, not NIC data.
+The native pair was cleaned up in 19,216 ms with all 707 runtime hashes/modes
+unchanged. [The ledger](GOLDSRC_PROTOCOL.md#protocol-46-reverse-known-text)
+records the reference association and exclusions.
+
+`ExperimentalProtocol46Linux3111dHldsToHltv` selects this direction explicitly
+with the existing protocol-46 prefix and unchanged coefficient implementation.
+Initial offsets 8..17, other positions/keys, higher guarded counters and longer
+periods extrapolate the measured reverse cohort. There is no message-boundary,
+normal-player, first-bit-30 or tail-plaintext expansion.
+
+Separate production-profile replay passed 60 full-text matches/1,642 known
+bytes and 60 whole candidate-word buffers, inverse, sentinel and opaque-tail
+preservation checks. It is post-implementation conformance to the frozen
+model; unknown plaintext is not independently verified. Final focused
+`ohl-net` validation passed 123 tests with one reference ignored, including
+18 word-codec tests and two new authored manual vectors. Strict crate Clippy,
+formatting and diff checks passed.
+
+Final checkpoint validation after the packaging ZIP update passed 3,373 tests
+with 38 ignored across 258 result summaries using
+`cargo test --workspace --locked`. Workspace formatting and strict locked
+workspace/all-target Clippy passed. The post-update cargo-deny check passed
+advisories, bans, licenses and sources, retaining 18 `duplicate` warnings and
+one `license-not-encountered` warning. `Cargo.lock` changed only for ZIP 9.0.4
+and its required closure, documented in
+[the packaging provenance note](FORMAT_SOURCES.md#release-zip-dependency-maintenance-2026-10-17).
+These project checks add no ordinary-player interoperability result.
+
 ## Clean-room and compatibility boundary
 
 [CLEAN_ROOM.md](CLEAN_ROOM.md) permits independent behavior observations of
@@ -246,8 +310,8 @@ intermediates, internal names and credentials. They remain local and ignored;
 tests and worked examples use authored synthetic data only. A small or
 transformed packet sample does not become a publishable fixture.
 
-Server-to-proxy transforms, first-bit-30-set packets, general partial-word/tail rules,
-complete header extent, compression, fragmentation, reliable delivery,
+Untested runtime/direction combinations, first-bit-30-set packets, general
+partial-word/tail rules, complete header extent, compression, fragmentation, reliable delivery,
 sign-on/authentication and ordinary-player commands remain unverified.
 This word model supplies no normal-player or complete gameplay-channel
 interoperability result.

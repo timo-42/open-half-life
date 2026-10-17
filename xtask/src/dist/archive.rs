@@ -117,7 +117,7 @@ pub fn create_zip(dist_dir: &Path, archive_path: &Path) -> io::Result<()> {
         .into_owned();
     let file = std::fs::File::create(archive_path)?;
     let mut writer = zip::ZipWriter::new(file);
-    let options: zip::write::FileOptions<'_, ()> =
+    let options: zip::write::FileOptions<'_, '_, ()> =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     for relative in relative_files(dist_dir)? {
@@ -223,7 +223,14 @@ mod tests {
         let file = std::fs::File::open(&archive_path).expect("open archive");
         let mut archive = zip::ZipArchive::new(file).expect("read zip");
         let mut names: Vec<String> = (0..archive.len())
-            .map(|index| archive.by_index(index).expect("entry").name().to_owned())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .expect("entry")
+                    .name()
+                    .expect("entry name")
+                    .into_owned()
+            })
             .collect();
         names.sort();
         assert!(names.contains(

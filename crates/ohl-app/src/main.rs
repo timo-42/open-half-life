@@ -235,10 +235,15 @@ confuse for one another"
     ))
 )]
 struct Cli {
-    /// Query an original-protocol server without requiring or importing media.
+    /// Query server metadata without importing media or joining a game.
     #[arg(long, value_name = "IP[:PORT]", value_parser = network::parse_address,
-        conflicts_with_all = ["iso", "path", "play", "training", "skirmish", "map", "load", "script", "headless_screenshot"])]
+        conflicts_with_all = ["iso", "path", "play", "training", "skirmish", "map", "load", "script", "chain_script", "headless_screenshot", "benchmark_seconds", "profile_frames"])]
+    #[cfg_attr(feature = "dev-tools", arg(conflicts_with_all = ["dev_bsp", "dev_mdl", "reachability_report", "plan_route"]))]
     query_server: Option<std::net::SocketAddr>,
+
+    /// Metadata query profile: a2s by default; won46 selects the observed pre-Steam query codec.
+    #[arg(long, value_enum, requires = "query_server")]
+    query_profile: Option<network::QueryProfile>,
 
     /// Path to a Half-Life installation ISO.
     #[arg(long, conflicts_with = "path")]
@@ -1007,7 +1012,7 @@ fn preflight(iso_path: PathBuf) -> Option<(ValidatedMedia, Mount)> {
 
 fn run(cli: Cli) -> ExitCode {
     if let Some(address) = cli.query_server {
-        return if network::run_query(address) {
+        return if network::run_query(address, cli.query_profile.unwrap_or_default()) {
             ExitCode::SUCCESS
         } else {
             ExitCode::from(EXIT_FAILURE)

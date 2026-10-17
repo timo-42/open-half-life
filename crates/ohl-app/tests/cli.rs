@@ -284,3 +284,143 @@ fn the_help_text_lists_the_campaign_flow_flags() {
         "--difficulty is documented"
     );
 }
+
+#[test]
+fn query_cli_selects_exact_wire_requests_without_media_and_redacts_metadata() {
+    use std::net::UdpSocket;
+    use std::thread;
+    use std::time::Duration;
+
+    for profile in [None, Some("a2s"), Some("won46")] {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let address = socket.local_addr().unwrap().to_string();
+        let handle = thread::spawn(move || {
+            let mut received = [0; 64];
+            let (length, client) = socket.recv_from(&mut received).unwrap();
+            // Independently authored messages, never original-server fixtures.
+            let reply = if profile == Some("won46") {
+                assert_eq!(&received[..length], b"\xff\xff\xff\xffdetails");
+                b"\xff\xff\xff\xffmunlisted-address\0unlisted-server\0unlisted-map\0unlisted-dir\0unlisted-description\0\x02\x08\x2edl\x01\0\0\xa7".to_vec()
+            } else {
+                assert_eq!(
+                    &received[..length],
+                    b"\xff\xff\xff\xffTSource Engine Query\0"
+                );
+                let mut reply = b"\xff\xff\xff\xffI\x30unlisted-server\0unlisted-map\0unlisted-dir\0unlisted-description\0".to_vec();
+                reply.extend_from_slice(&70_u16.to_le_bytes());
+                reply.extend_from_slice(&[2, 8, 0, b'd', b'l', 1, 0]);
+                reply.extend_from_slice(b"unlisted-version\0");
+                reply
+            };
+            socket.send_to(&reply, client).unwrap();
+        });
+        let mut args = vec!["--query-server", address.as_str()];
+        if let Some(profile) = profile {
+            args.extend(["--query-profile", profile]);
+        }
+        let output = run(&args);
+        handle.join().unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let protocol = if profile == Some("won46") { 46 } else { 48 };
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "Server query succeeded: protocol={protocol}, players=2, capacity=8, password_protected=true.\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn query_profiles_require_a_target_and_reject_conflicting_modes_before_import() {
+    for args in [
+        vec!["--query-profile", "won46"],
+        vec!["--query-profile", "a2s"],
+        vec![
+            "--query-server",
+            "127.0.0.1:1",
+            "--query-profile",
+            "unknown",
+        ],
+        vec![
+            "--query-server",
+            "127.0.0.1:1",
+            "--query-profile",
+            "a2s",
+            "--query-profile",
+            "won46",
+        ],
+    ] {
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+    let modes = vec![
+        vec!["--iso", "nonexistent.iso"],
+        vec!["nonexistent.iso"],
+        vec!["--play"],
+        vec!["--training"],
+        vec!["--skirmish"],
+        vec!["--map", "synthetic"],
+        vec!["--load", "synthetic"],
+        vec!["--script", "synthetic"],
+        vec!["--chain-script", "synthetic"],
+        vec!["--headless-screenshot", "synthetic.png"],
+        vec!["--benchmark-seconds", "1"],
+        vec!["--profile-frames"],
+    ];
+    #[cfg(feature = "dev-tools")]
+    let modes = {
+        let mut modes = modes;
+        modes.extend([
+            vec!["--dev-bsp", "synthetic.bsp"],
+            vec!["--dev-mdl", "synthetic.mdl"],
+            vec!["--reachability-report"],
+            vec!["--plan-route", "synthetic.json"],
+        ]);
+        modes
+    };
+    for mode in modes {
+        let mut args = vec!["--query-server", "127.0.0.1:1", "--query-profile", "won46"];
+        args.extend(mode);
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("Mounted"));
+        assert!(!stderr.contains("Media preflight"));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn query_cli_failure_does_not_publish_peer_text_or_addresses() {
+    use std::net::UdpSocket;
+    use std::thread;
+    use std::time::Duration;
+
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let address = socket.local_addr().unwrap().to_string();
+    let handle = thread::spawn(move || {
+        let mut received = [0; 64];
+        let (length, client) = socket.recv_from(&mut received).unwrap();
+        assert_eq!(&received[..length], b"\xff\xff\xff\xffdetails");
+        socket
+            .send_to(b"\xff\xff\xff\xffmnever-log-this-peer-text", client)
+            .unwrap();
+    });
+    let output = run(&["--query-server", &address, "--query-profile", "won46"]);
+    handle.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Server query failed: no supported response was received.\n"
+    );
+}

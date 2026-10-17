@@ -16,6 +16,14 @@ const QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type BrowserResult = Result<Vec<LanGame>, &'static str>;
 
+/// Explicit metadata-query transport selection; neither option joins a game.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub enum QueryProfile {
+    #[default]
+    A2s,
+    Won46,
+}
+
 /// Accepts numeric IPv4/IPv6 addresses, optionally with an explicit port.
 /// There is no blocking DNS resolution in the window's event loop.
 pub fn parse_address(value: &str) -> Result<SocketAddr, String> {
@@ -119,11 +127,39 @@ impl Browser {
 
 /// CLI inspection publishes only bounded protocol/player facts. Server
 /// names, map paths, rule strings and endpoint addresses are never logged.
-pub fn run_query(address: SocketAddr) -> bool {
-    if let Ok(info) = ohl_net::query_info(address, QUERY_TIMEOUT) {
+pub fn run_query(address: SocketAddr, profile: QueryProfile) -> bool {
+    let facts = match profile {
+        QueryProfile::A2s => ohl_net::query_info(address, QUERY_TIMEOUT)
+            .ok()
+            .map(|info| {
+                (
+                    info.protocol,
+                    info.players,
+                    info.max_players,
+                    info.password_protected,
+                )
+            }),
+        QueryProfile::Won46 => {
+            use ohl_net::legacy::{Profile, Request, Response};
+            match ohl_net::query_legacy(
+                address,
+                QUERY_TIMEOUT,
+                Profile::ObservedLinux3111d,
+                Request::Details,
+            ) {
+                Ok(Response::ObservedDetails(details)) => Some((
+                    details.published.protocol,
+                    details.published.players,
+                    details.published.max_players,
+                    details.published.password_protected,
+                )),
+                _ => None,
+            }
+        }
+    };
+    if let Some((protocol, players, capacity, password_protected)) = facts {
         println!(
-            "Server query succeeded: protocol={}, players={}, capacity={}, password_protected={}.",
-            info.protocol, info.players, info.max_players, info.password_protected
+            "Server query succeeded: protocol={protocol}, players={players}, capacity={capacity}, password_protected={password_protected}."
         );
         true
     } else {

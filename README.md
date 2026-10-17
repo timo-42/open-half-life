@@ -190,8 +190,9 @@ back one page at a time.
   Course*, and *Load Game* (every save slot, newest first).
 - **Multiplayer** — *Skirmish* (the offline deathmatch against bots below),
   *Create LAN Server* and *Find LAN Games*. The browser sends original Valve
-  queries and displays responding servers, maps, player counts, latency and
-  protocol versions. It can also query a numeric IP address and port.
+  A2S queries and displays responding servers, maps, player counts, latency
+  and protocol versions. It can also query a numeric IP address and port.
+  The pre-Steam query profile below is currently a CLI option.
   Creating and joining network gameplay remain unavailable while the original
   GoldSrc gameplay channel is being specified and validated.
 - **Options** — *Video* (windowed, borderless or exclusive fullscreen,
@@ -233,23 +234,36 @@ or pass `--force-respawn` to come back automatically. A skirmish is never
 saved. With `--script` it runs headless and logs an aggregate summary
 (combatants, deaths, frags) at the end. See `docs/MILESTONES.md`, "M9.56".
 
-**Original-protocol server queries** work without an ISO or imported assets:
+**Original-protocol server queries** work without an ISO, imported assets or
+opening a game window. Select the observed pre-Steam Linux reference explicitly:
+
+```sh
+cargo run -p ohl-app -- --query-server 127.0.0.1:27015 --query-profile won46
+```
+
+`won46` selects `ObservedLinux3111d` for a single historical Details reply.
+Omitting `--query-profile`, or passing `--query-profile a2s`, preserves the
+later A2S query behavior:
 
 ```sh
 cargo run -p ohl-app -- --query-server 127.0.0.1:27015
 ```
 
-The CLI prints protocol and player-count aggregates; server-provided names,
-maps and rule strings stay out of logs. The LAN browser searches UDP port
-27015; use **Query address** for a different numeric address or port.
-Queries use the original documented INFO/PLAYER/RULES protocol, including
-challenges and GoldSrc split replies. They do not establish a gameplay
-connection. The Rust engine also exposes dedicated deathmatch actors with up
-to 32 humans/bots, stable player identities, authoritative command processing,
-combat, pickups, scoring and respawn. That API is independent of transport;
-original gameplay packet framing, deltas, movement and authentication remain
-unimplemented. See [the protocol evidence and remaining
-work](docs/GOLDSRC_PROTOCOL.md) for verified coverage and reference testing.
+Use a numeric IPv4/IPv6 address; the default UDP port is 27015. The CLI prints
+only protocol, player count, capacity and password status. Its query deadline
+is a project-chosen 1.5 seconds. `--query-profile` requires `--query-server`;
+query mode rejects media/play, scripted capture, profiling and development
+viewer modes. The LAN browser remains A2S-only. That path supports challenges
+and GoldSrc query splits; `won46` has no fallback, challenge or split handling.
+The public `won46` CLI passed one query against the original protocol-46
+reference; this is metadata interoperability, with all four original/Rust
+client-server gameplay pairings still pending.
+
+The Rust engine separately exposes dedicated deathmatch actors for up to
+32 participants, stable player identities, authoritative commands, combat,
+pickups, scoring and respawn. Original gameplay framing, deltas, movement,
+prediction and authentication remain unfinished. See [the protocol evidence
+and remaining work](docs/GOLDSRC_PROTOCOL.md) for measured scope and limits.
 
 **Headless screenshots**, for a machine with no display server (a GPU
 adapter is still required):

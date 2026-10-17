@@ -98,6 +98,7 @@ suffix or confirmed build. Whole-source SHA-256 provenance:
 | Query 001 recording | `14af134e701648220352a2d3e46dbedcb3b0678145cfd6b0d055f378d0e2ec57` |
 | Query 002 recording | `17865c9143f28442b209dee802ba0b1edf10e43258b78e0e3d9cb94a21abe89d` |
 | Query 003 recording | `78b70edff7e0f2000b85e98c1e0d95c8ef67e7fcc4426524febc5613de3bff80` |
+| Public `won46` CLI recording | `2032707a999e19307e0787e0104146ae9fffd8fb723f803fd83f27a4f5308107` |
 
 These package hashes do not cover every dynamic runtime dependency. Mirror
 MD5 agreement is integrity evidence, not publisher cryptographic authentication.
@@ -126,13 +127,21 @@ and native text remain private.
 
 The public-update-only client stage's executable/config origins matched
 verified extracted entries plus project-authored configuration. The current
-reference gate is `UnclassifiedPreEngineInputDialog`: two fresh short-C-drive
-starts, including Wine's documented Windows XP64 setting, retained matching
-stage hashes but observed no engine/game-client load or client
+reference gate is `UnclassifiedPreEngineInputDialog`: the initial two fresh
+short-C-drive starts, including Wine's documented Windows XP64 setting,
+retained matching stage hashes but observed no engine/game-client load or client
 protocol. No UDP reached the owned observation endpoint; this is not a
 system-wide traffic measurement. The dialog's cause is unclassified, with
 no established missing-key or missing-data diagnosis. Owned processes were
 stopped; no installer, ISO code or ISO scripts were executed.
+
+A later bounded file/loader trace found one unique verified public-patch asset
+at a different location. One isolated exact-byte copy to the absent requested
+location changed that lookup to four nonerror resolutions. All 28 compared
+PID-owned UI category/length fields stayed unchanged across three samples;
+there was no engine/game-client load or traffic at the owned endpoint.
+The gate persists, with no missing-key/data diagnosis or observed startup
+remedy. Original data, identities and UI text remain private.
 
 ## Protocol-46 spectator packet cohorts
 
@@ -174,7 +183,7 @@ the historical protocol-48 selectors remain distinct. Tracker
 returns `EchoComparison::ProfileMismatch`
 for a foreign observation; word operations return
 `WordTransformError::ProfileMismatch` before output changes. One unchanged
-coefficient table serves both word profiles. No profile is detected from bytes.
+coefficient table serves all word profiles. No profile is detected from bytes.
 
 Production-profile Rust replay matched 708 eligible echoes, excluded one
 unseen reference and matched all 60 texts/5,962 bytes, plus 60 inverse,
@@ -184,10 +193,56 @@ held-out discovery or tail-plaintext result. Six new synthetic tests bring
 focused `ohl-net` validation to 111 passed and one ignored; strict crate
 Clippy, targeted formatting and diff checks passed.
 
-A passive reverse scan found no authored text in 288 clear-bit-30 candidates;
-delivery of that text to the proxy was not established. Reverse compatibility
-remains unverified. These cohorts establish no ordinary-player sign-on,
-endpoint command consumption, complete channel or playable CLI.
+An earlier passive reverse scan found no authored text in 288 clear-bit-30
+candidates, without establishing delivery. The separate server-originated
+cohort below supplies narrower known-text evidence. Neither result establishes
+ordinary-player sign-on, complete channel behavior or a playable CLI.
+
+## Protocol-46 reverse known text
+
+The same base-plus-d-update HLDS/HLTV reference was measured in the
+server-to-proxy direction with the unchanged frozen model. A pilot identified
+60 authored 63-byte prefixes at absolute UDP offset 18: 3,780 known bytes,
+900 wholly known words, 15 whole mask slots, 63 byte positions and 60 low-counter
+bytes. Its 63-byte endpoint was selected after the run; full intended text
+delivery and a general truncation rule were not established.
+
+| Reverse cohort | Relay records / equal pairs | Complete-capture SHA-256 |
+| --- | --- | --- |
+| Pilot, post-run prefix coverage | 1,559 / 779 | `5d00c593ff25bbd98bd31547bd96b28827a90259b2209de789cb170ee5ed4508` |
+| Fresh predeclared full texts | 1,547 / 773 | `c7fd6f782eca67abe22a54f8d2a00244320bdcd5203f71a073aa9cb3f40eaae9` |
+
+Each recording also retains one unpaired proxy-to-server cleanup ingress
+with an explicit `connection_refused` send failure and no successful egress;
+it is excluded from equal pairs and proves no delivery. Envelopes and
+call-level timestamps are synthesized application-relay records, not NIC data.
+
+The fresh run froze 60 new texts, lengths 24..31, and the 16-byte marker
+window `[18,34)` before launch. All 60 full texts appeared in both endpoint
+consoles and matched at offset 18, ending at offsets 42..49 exclusive. That
+covers 1,642 known bytes, 358 wholly known words, seven whole mask slots,
+31 byte positions and 60 distinct low-counter bytes, with zero contradictions
+or missing/duplicate events and no model/offset fitting. Matched packet
+length residues 0/1/2/3 had 15/16/14/15 samples; text residues had 15 each.
+Of 346 server-to-proxy datagrams, three connectionless/split and 25 first-bit-30
+candidates were excluded; 318 selected candidates comprise 60 matches and
+258 retained unmatched records. All 104 partial-tail bytes remain unknown;
+no known text entered a partial tail. Cleanup finished in 19,216 ms with
+707 runtime hashes/modes unchanged and owned processes/ports released.
+
+`WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltv` requires
+`PrefixProfile::ExperimentalProtocol46Linux3111d` and first bit 30 clear.
+The prefix cannot establish direction: callers select the measured direction
+explicitly. There is no reverse protocol-48 profile or automatic fallback.
+Offsets 8..17, other positions/keys, higher guarded counters and longer
+periods extrapolate this reverse cohort. The full-word/tail boundary and
+other limits are unchanged in [the specification](GOLDSRC_TRANSFORM.md).
+
+Separate production-profile replay matched 60 full texts/1,642 known bytes and
+60 candidate whole-word buffers, inverse regions, sentinels and opaque-tail
+preservation checks. This is post-implementation conformance to the frozen
+model, not an additional held-out discovery or unknown-plaintext validation.
+No ordinary-player, sign-on, reliability or complete-header claim follows.
 
 ## Bounded query observation
 
@@ -378,8 +433,9 @@ view and leaves a final zero-through-three-byte tail opaque. No known text
 entered that incomplete tail, so tail plaintext is unverified. First-word
 bit 30 must be clear. No packet send path, automatic svc decoding, reliable
 channel, authentication or normal-player compatibility follows from this
-result. Other directions, header extent, higher-counter/body-range
-applicability and complete transform variants remain evidence gaps.
+result. Untested runtime/direction combinations, header extent,
+higher-counter/body-range applicability and complete transform variants
+remain evidence gaps.
 
 ## Documented connectionless query formats
 
@@ -453,8 +509,9 @@ and diff checks passed. Final locked workspace tests passed 3,327 tests with
 38 ignored across 256 result summaries. Full workspace formatting, strict
 workspace/all-target Clippy and cargo-deny also passed; the lockfile is
 unchanged. These are codec checks, not a new original-runtime or
-playable-client result. The existing CLI/browser still uses the earlier A2S
-query client; no host/join gameplay CLI was added.
+playable-client result. The later opt-in query API/CLI below extends historical
+metadata queries; the browser remains A2S-only. No host/join gameplay CLI was
+added.
 
 ### Observed pre-Steam query profile
 
@@ -473,6 +530,54 @@ focused locked crate result to 105 passed and one ignored. Final locked
 workspace tests passed 3,334 tests with 38 ignored across 256 summaries;
 workspace formatting, strict locked workspace/all-target Clippy and cargo-deny
 passed, with no lockfile change. This adds no gameplay transport or playable CLI.
+
+### Strict historical query API and CLI
+
+`ohl_net::query_legacy(address, timeout, profile, request)` returns the separate
+`legacy::Response` or fixed `LegacyQueryError` categories. It sends one exact
+ASCII request through a connected UDP socket with an explicit profile.
+Project bounds are a nonzero absolute deadline of at most 30 seconds,
+64 received datagrams and 1,400 bytes per datagram. Well-formed wrong-kind
+replies share that deadline/budget; malformed replies and splits fail
+without A2S conversion, profile fallback or challenge exchange.
+
+`--query-server IP[:PORT] --query-profile won46` selects
+`ObservedLinux3111d` Details before media import or GUI startup. Omitted or
+`a2s` profile retains modern A2S behavior; the menu browser remains A2S-only.
+Addresses are numeric IPv4/IPv6 with default port 27015. The CLI uses a
+project-chosen 1.5-second deadline and emits only protocol, players, capacity
+and password status. Profile selection requires a query target and rejects
+media/play, scripted capture, profiling and development-viewer conflicts.
+
+One invocation of the existing compiled public CLI against a separate
+707-file verified original stage exited 0, as did HLDS. Actual output and an
+independent strict reply traversal agreed on protocol 46, players 0,
+capacity 4 and password false. The 60-byte reply retained exactly one opaque
+extension byte. Four relay records form two equal receive/forward pairs;
+the request was the exact unterminated ASCII form. The complete recording
+hash is in the source table above. Owned cleanup completed in 1,228 ms;
+707 native hashes/modes, six selected Rust source hashes and the CLI digest
+were unchanged, and owned processes/ports were released. These are
+synthesized-envelope application-relay observations, not NIC capture.
+
+The tested CLI executable SHA-256 was
+`4aa2d119401225471ced3e0d4c102bfdca769a4430324a7f4132ef0326e4a6ff`.
+Its prior build had no retained executable digest; the builder's handoff
+and unchanged source hashes associate the currently bound artifact with
+that build. This metadata result establishes no admission or gameplay.
+Focused final validation passed 123 `ohl-net` tests with one reference ignored,
+183 `ohl-app` tests with four ignored and one targeted `dev-tools` conflict
+test. Strict crate Clippy, formatting and diff checks passed.
+
+Final checkpoint validation after the packaging ZIP update passed 3,373 tests
+with 38 ignored across 258 result summaries using
+`cargo test --workspace --locked`. Workspace formatting and strict locked
+workspace/all-target Clippy passed. The post-update cargo-deny check passed
+advisories, bans, licenses and sources, retaining 18 `duplicate` warnings and
+one `license-not-encountered` warning. `Cargo.lock` changed only for ZIP 9.0.4
+and its required closure, documented in
+[the packaging provenance note](FORMAT_SOURCES.md#release-zip-dependency-maintenance-2026-10-17).
+These project checks add no ordinary-player interoperability result.
 
 ## Documented join outline
 
@@ -535,9 +640,9 @@ close an evidence gap:
   interleaving, compression, and size limits. Connectionless query splits
   above do not specify these channel fragments.
 - Complete GoldSrc byte munging: the experimental
-  [full-word proxy-to-server model](GOLDSRC_TRANSFORM.md) does not establish
-  other directions/variants, every counter or body range, complete header
-  extent or trailing-byte rules. No reviewed public prose source here
+  [full-word spectator models](GOLDSRC_TRANSFORM.md) do not establish
+  untested runtime/direction combinations, every counter or body range,
+  complete header extent or trailing-byte rules. No reviewed public prose source here
   establishes those remaining details.
 - Delta field metadata bootstrap, complete field types, bit order,
   quantization, signed values, conditional fields, and baseline selection.
