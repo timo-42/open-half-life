@@ -25,7 +25,7 @@ use crate::scene::{
     SceneBudget, SceneCatalog, SceneEpoch, SceneFrame, SceneIdentity, StudioRecord,
 };
 use crate::sprites::TransientSprite;
-use crate::viewmodel::{self, ViewModelFrame};
+use crate::viewmodel::{self, ViewModelDraw};
 
 #[path = "visual_effects.rs"]
 mod visual_effects;
@@ -225,7 +225,7 @@ impl Renderers {
         light_styles: &LightStyles,
         elapsed: f32,
         target: RenderTarget<'_>,
-        view_model: Option<&ViewModelFrame>,
+        view_model: Option<ViewModelDraw<'_>>,
         transient_sprites: &[TransientSprite],
         gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
         tank_pulses: &[crate::tanks::LaserPulse],
@@ -309,7 +309,7 @@ impl Renderers {
         // drawn), so a weapon pressed against a wall is never clipped by
         // world geometry — but it can still occlude nothing after it, since
         // nothing else draws this frame.
-        if let (None, Some(frame), Some(depth)) = (recipient_body, view_model, depth.as_ref()) {
+        if let (Some(frame), Some(depth)) = (view_model, depth.as_ref()) {
             self.draw_view_model(context, level, camera, frame, depth, target);
         }
         if let Some(fade) = gameplay_effects.fade.filter(|_| recipient_body.is_none()) {
@@ -329,7 +329,7 @@ impl Renderers {
         context: &GpuContext,
         level: &Level,
         camera: &FreeFlyCamera,
-        frame: &ViewModelFrame,
+        frame: ViewModelDraw<'_>,
         depth: &wgpu::TextureView,
         target: RenderTarget<'_>,
     ) {
@@ -366,7 +366,7 @@ impl Renderers {
         // Lit like a model standing at the eye, so the weapon darkens with
         // the room the player is in.
         let ambient = ambient_at(level, camera.position);
-        let instances = [viewmodel::instance(frame.transform, &frame.pose, ambient)];
+        let instances = [viewmodel::instance(frame.transform, frame.pose, ambient)];
         renderer.render(
             context,
             model,

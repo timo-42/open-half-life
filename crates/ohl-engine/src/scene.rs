@@ -334,7 +334,17 @@ impl SceneReplica {
 
     /// No state changes on any rejection. No tick wrapping or epoch fallback.
     pub fn apply(&mut self, frame: SceneFrame) -> Result<(), SceneError> {
-        validate_frame(&frame, &self.catalog, self.epoch, self.limits)?;
+        self.apply_with_extra_studio(frame, None)
+    }
+
+    /// A recipient may add one already sampled first-person studio instance.
+    /// It shares validation and the aggregate budget without a fake world ID.
+    pub(crate) fn apply_with_extra_studio(
+        &mut self,
+        frame: SceneFrame,
+        extra: Option<(&StudioHandle, &StudioPose)>,
+    ) -> Result<(), SceneError> {
+        validate_frame(&frame, &self.catalog, self.epoch, self.limits, extra)?;
         if let Some(previous) = &self.frame {
             if frame.tick <= previous.tick {
                 return Err(SceneError::StaleTick);
@@ -422,6 +432,7 @@ fn validate_frame(
     catalog: &SceneCatalog,
     epoch: SceneEpoch,
     limits: SceneLimits,
+    extra: Option<(&StudioHandle, &StudioPose)>,
 ) -> Result<(), SceneError> {
     if &frame.catalog != catalog {
         return Err(SceneError::WrongCatalog);
@@ -432,11 +443,21 @@ fn validate_frame(
     if !frame.time.is_finite() || frame.time < 0.0 {
         return Err(SceneError::InvalidTime);
     }
-    if frame.brushes.len().saturating_add(frame.studios.len()) > limits.max_instances {
+    if frame
+        .brushes
+        .len()
+        .saturating_add(frame.studios.len())
+        .saturating_add(usize::from(extra.is_some()))
+        > limits.max_instances
+    {
         return Err(SceneError::InstanceLimit);
     }
     let mut identities = BTreeSet::new();
     let mut budget = SceneBudget::new(limits);
+    if let Some((model, pose)) = extra {
+        validate_pose(catalog, model, pose, &[])?;
+        budget.add(1, pose.matrices.len())?;
+    }
     for brush in &frame.brushes {
         validate_identity(brush.identity, epoch, &mut identities)?;
         if catalog != &brush.model.catalog || !catalog.0.brushes.contains(&brush.model.local_index)
@@ -558,7 +579,7 @@ pub(crate) fn capture(
     let brushes = collect_brushes(level, catalog, epoch, &mut budget)?;
     let studios = collect_studios(level, catalog, epoch, &mut budget)?;
     let frame = SceneFrame::new(catalog.clone(), epoch, tick, time, brushes, studios);
-    validate_frame(&frame, catalog, epoch, SceneLimits::default())?;
+    validate_frame(&frame, catalog, epoch, SceneLimits::default(), None)?;
     Ok(frame)
 }
 

@@ -1084,7 +1084,7 @@ impl Systems {
         if let Some(skirmish) = self.skirmish.as_mut() {
             skirmish.pickups(level, dt, &mut self.pickups); // 11b
             for bot in &mut skirmish.bots {
-                bot.update_animation(level);
+                bot.update_animation(level, dt);
                 self.presentation.add_sounds(bot.drain_sounds());
             }
         }

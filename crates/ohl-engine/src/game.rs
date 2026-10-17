@@ -303,6 +303,46 @@ impl Game {
         self.systems.skirmish.as_deref()
     }
 
+    /// Called only after Deathmatch checks the complete admitted player ID.
+    /// Samples that actor's playback without consuming actions or advancing it.
+    pub(crate) fn capture_recipient_view_model(
+        &self,
+        id: crate::deathmatch::PlayerId,
+        camera: crate::recipient::RecipientCamera,
+    ) -> std::result::Result<
+        Option<crate::recipient::RecipientViewModel>,
+        crate::recipient::RecipientError,
+    > {
+        use crate::recipient::{RecipientError, RecipientViewModel};
+        let actor = self
+            .deathmatch_state()
+            .and_then(|state| state.bots.get(usize::from(id.slot)))
+            .filter(|actor| actor.connected() && actor.is_remote())
+            .ok_or(RecipientError::WrongRecipient)?;
+        let Some(playback) = actor.view_model() else {
+            return Ok(None);
+        };
+        // A host-global project setting, not spectator state, a client-local
+        // preference or a decoded wire field. No additional magnitude cap.
+        let config = self.systems.config();
+        if config.view_model_offset.iter().any(|v| !v.is_finite()) {
+            return Err(RecipientError::InvalidViewModel);
+        }
+        let camera = camera.camera(FreeFlyCamera::default().fov_y_degrees, 1.0)?;
+        let Some(frame) = crate::viewmodel::build_frame(&self.level, &camera, config, playback)
+        else {
+            return Ok(None);
+        };
+        if frame.transform.iter().any(|v| !v.is_finite()) {
+            return Err(RecipientError::InvalidViewModel);
+        }
+        Ok(Some(RecipientViewModel {
+            model: self.scene_catalog.studio_handle(frame.model_slot)?,
+            pose: frame.pose,
+            transform: frame.transform,
+        }))
+    }
+
     pub(crate) fn deathmatch_tick_count(&self) -> u64 {
         self.systems.deathmatch_tick_count()
     }
@@ -2348,7 +2388,8 @@ impl Game {
     /// Draw accepted selected-player presentation using this exact catalog.
     /// FOV is an explicit local preference; near/far use fresh project defaults.
     /// Time/camera come from the frame, with default lightstyles and no local
-    /// camera overrides, viewmodel, transients, registry visuals or audio.
+    /// camera overrides, transients, registry visuals or audio. The viewmodel
+    /// is the accepted actor's already sampled pose and placement.
     ///
     /// # Errors
     /// No accepted frame, wrong catalog, invalid projection or GPU failure.
@@ -2392,7 +2433,7 @@ impl Game {
                 replica.light_styles(),
                 frame.scene().time(),
                 target,
-                None,
+                frame.state().view_model.as_ref().map(|model| model.draw()),
                 &[],
                 &effects,
                 &[],
@@ -2445,7 +2486,7 @@ impl Game {
             &self.light_styles,
             self.elapsed,
             target,
-            view_model.as_ref(),
+            view_model.as_ref().map(|model| model.draw()),
             self.systems.transient_sprites().as_slice(),
             &effects,
             self.systems.tanks.laser_pulses(),

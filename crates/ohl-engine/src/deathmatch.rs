@@ -345,7 +345,8 @@ impl Deathmatch {
 
     /// Own one admitted human's camera/HUD plus public roster and world scene.
     /// This selects no spectator state and never advances or drains authority.
-    /// First-person animation, wire mapping and prediction remain outside it.
+    /// First-person playback is sampled from this actor; wire mapping and
+    /// prediction remain outside it.
     ///
     /// # Errors
     /// Expired/foreign/bot identity, unavailable rules or invalid scene data.
@@ -357,11 +358,12 @@ impl Deathmatch {
         use crate::recipient::{RecipientError, RecipientFrame};
         self.remote_index(id)
             .map_err(|_| RecipientError::WrongRecipient)?;
-        let state = self
+        let mut state = self
             .game
             .deathmatch_state()
             .ok_or(RecipientError::WrongRecipient)?
             .recipient_state(id, &self.generations, epoch)?;
+        state.view_model = self.game.capture_recipient_view_model(id, state.camera)?;
         Ok(RecipientFrame::new(self.game.capture_scene(epoch)?, state))
     }
 

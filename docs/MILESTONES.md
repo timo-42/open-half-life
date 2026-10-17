@@ -10073,7 +10073,8 @@ host epoch and exact resource catalog, with atomic scene/state replacement
 and bounded validation. Shared-catalog drawing uses accepted frame time,
 explicit local FOV, project near/far defaults and default lightstyles. It
 suppresses the selected body's exact generational model and attached held
-model. Spectator camera/effects are excluded and `VM=None` remains deliberate.
+model. Spectator camera/effects are excluded. At this checkpoint `VM=None`
+was deliberate; the per-human playback slice below supersedes that limit.
 Capture, apply, UI projection and draw do not advance authority.
 
 Locked full-engine validation passed 800 tests with six ignored across 70
@@ -10090,8 +10091,55 @@ workspace/all-target Clippy and cargo-deny passed; cargo-deny retains 18
 `duplicate` warnings and one `license-not-encountered` warning. The earlier
 3,388/38/259 workspace totals keep their prior checkpoint scope.
 
-App remote-session integration, resource/wire mapping, serialization,
-connection, first-person weapon animation, runtime lightstyles, audio,
-transients, dynamic collision, interpolation and prediction remain pending.
-This adds no runnable host/join mode or original interoperability result.
+At this checkpoint, app remote-session integration, resource/wire mapping,
+serialization, connection, first-person weapon animation, runtime lightstyles,
+audio, transients, dynamic collision, interpolation and prediction remained
+pending. It added no runnable host/join mode or original interoperability result.
 The retail-key gate and all four pending gameplay pairings are unchanged.
+
+### Per-human first-person recipient playback (2026-10-17)
+
+Each admitted remote human now owns independent first-person playback using
+the existing weapon animation machinery. Join resolves loaded bindings once
+and initializes the selected draw immediately. Authoritative fixed steps
+consume the actor's combat actions once and advance playback once; actual
+reload admission drives animation while full-clip requests and cooldown do
+not invent actions. Death hides it, respawn resets playback while retaining
+bindings, and leave/rejoin starts fresh.
+
+`Deathmatch::capture_recipient` owns an optional `RecipientViewModel` with a
+catalog-qualified model handle, sampled pose and finite placement matrix.
+It uses the selected actor's real eye and the finite host-global
+`SystemsConfig::view_model_offset`; missing optional assets or a dead actor
+yield `None`. Final shared scene validation counts world, held and viewmodel
+instances/bones together before atomically accepting scene, HUD and viewmodel.
+Shared-catalog drawing borrows the accepted pose without resampling or
+authority advance and reuses the existing depth-clear pass. Local FOV stays
+explicit; spectator camera, cursor and effects remain excluded. This
+supersedes the preceding engine checkpoint's `VM=None` and pending
+first-person-animation wording, without establishing original timing or
+equivalence.
+
+Locked full-engine validation passed 810 tests with six ignored across 70
+result summaries. The recipient suite passed 19 tests, including two GPU
+cases that return early without opt-in. Strict engine/all-target Clippy,
+workspace formatting and diff checks passed. Five separate
+`OHL_RENDER_GPU_TEST=1` harnesses passed: four require an adapter and exercise
+the new produced-viewmodel path plus existing recipient, scene and held-model
+pixels. The new test proves full wall occlusion in the ordinary depth pass,
+weapon-only colour changes after the viewmodel depth clear, explicit FOV,
+resource reuse and no authority advance. The older local viewmodel/sprite
+harness also passed, but its adapter-failure early return is not independently
+disambiguated by that result. All fixtures are project-authored. The ten
+source/test files retain their reviewed hashes and `Cargo.lock` is unchanged.
+
+Final `cargo test --workspace --locked` for this unit passed 3,409 tests with
+38 ignored across 260 result summaries. Workspace formatting, strict locked
+workspace/all-target Clippy and cargo-deny passed; cargo-deny retains 18
+`duplicate` warnings and one `license-not-encountered` warning. `Cargo.lock`
+is unchanged. The preceding 800-test engine and 3,399/38/260 workspace totals
+remain historical checkpoint evidence. App remote-session integration,
+resource/wire mapping, serialization, connection, runtime lightstyles, audio,
+transients, dynamic collision, interpolation and prediction remain pending.
+This adds no runnable host/join mode or original interoperability result; the retail-key gate and
+all four pending gameplay pairings are unchanged.

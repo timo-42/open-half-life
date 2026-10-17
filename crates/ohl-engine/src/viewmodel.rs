@@ -268,6 +268,20 @@ impl ViewModel {
         self.cycle = 0.0;
     }
 
+    /// Starts a fresh actor life without resolving or sampling bindings again.
+    /// This presentation counter is independent of the simulation's RNG.
+    pub(crate) fn reset_playback(&mut self) {
+        self.weapon = None;
+        self.entry = None;
+        self.model = None;
+        self.hidden = false;
+        self.action = ViewModelAction::Idle;
+        self.playing = None;
+        self.sequence = 0;
+        self.cycle = 0.0;
+        self.idle_picks = 0;
+    }
+
     /// Follows the player's selected weapon: a new selection swaps the model
     /// and plays its draw. `shown` is whether the player can see their
     /// weapon at all this step.
@@ -302,8 +316,8 @@ impl ViewModel {
     /// restarts every time (each shot replays the fire); a looping one only
     /// restarts when the sequence changes, so a repeated action does not
     /// stutter. An idle asked for while one is already playing lets that
-    /// one finish. Called from `crate::presentation::Presentation::tick`
-    /// (phase 13) for every viewmodel action the gameplay bridge queues.
+    /// one finish. Local presentation and each admitted human's fixed-step
+    /// update call it for the actions their own gameplay bridge queues.
     pub(crate) fn queue_action(&mut self, action: ViewModelAction) {
         if action == ViewModelAction::Idle
             && self.action == ViewModelAction::Idle
@@ -454,6 +468,24 @@ pub(crate) struct ViewModelFrame {
     pub transform: Mat4,
 }
 
+/// A draw borrows an already sampled pose; it never owns a playback cursor.
+#[derive(Clone, Copy)]
+pub(crate) struct ViewModelDraw<'a> {
+    pub model_slot: usize,
+    pub pose: &'a StudioPose,
+    pub transform: Mat4,
+}
+
+impl ViewModelFrame {
+    pub(crate) fn draw(&self) -> ViewModelDraw<'_> {
+        ViewModelDraw {
+            model_slot: self.model_slot,
+            pose: &self.pose,
+            transform: self.transform,
+        }
+    }
+}
+
 /// Builds this frame's [`ViewModelFrame`], or `None` when the view model is
 /// not configured (no model set), the configured slot has since gone out of
 /// range, or sampling its pose fails.
@@ -562,6 +594,30 @@ mod tests {
             !view_model.is_visible(),
             "an unpublished model shows nothing"
         );
+    }
+
+    #[test]
+    fn a_life_reset_reuses_bindings_and_forgets_the_previous_idle_rotation() {
+        let mut view_model = armed(&["ohl_idle", "ohl_deploy", "ohl_idle2", "ohl_shoot"]);
+        view_model.sync(Some(WeaponId::Glock), true);
+        for _ in 0..20 {
+            view_model.tick(0.25);
+        }
+        assert!(view_model.idle_picks > 0);
+        view_model.queue_action(ViewModelAction::Fire);
+        view_model.tick(0.05);
+        let weapons = view_model.weapons.clone();
+        let allocation = view_model.weapons.as_ptr();
+        let idles = view_model.weapons[0].idles.as_ptr();
+        view_model.reset_playback();
+        assert_eq!(view_model.weapons, weapons);
+        assert_eq!(view_model.weapons.as_ptr(), allocation);
+        assert_eq!(view_model.weapons[0].idles.as_ptr(), idles);
+        assert_eq!(view_model.idle_picks, 0);
+        assert!(!view_model.is_visible());
+        view_model.sync(Some(WeaponId::Glock), true);
+        assert_eq!(view_model.model(), Some(4));
+        assert_eq!(view_model.pose_cursor(), (1, 0.0));
     }
 
     #[test]

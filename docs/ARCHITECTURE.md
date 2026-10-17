@@ -159,19 +159,37 @@ network replication, full remote client or gameplay CLI is added.
 [`ohl-engine::recipient`](../crates/ohl-engine/src/recipient.rs) builds a
 project-defined selected-player view over this scene slice.
 `Deathmatch::capture_recipient(epoch, id)` produces an owned `RecipientFrame`
-for one connected human, using that actor's actual eye/view and selected
-numeric HUD. The roster carries each actor's public identity, name, score
-and alive state; numeric health, armor and ammunition come from the selected
-human. Pure `recipient::hud` and `recipient::scoreboard` adapters reuse existing
+for one connected human, using that actor's actual eye/view, selected
+numeric HUD and optional owned first-person weapon pose. The roster carries
+each actor's public identity, name, score and alive state; numeric health,
+armor and ammunition come from the selected human. Pure `recipient::hud` and
+`recipient::scoreboard` adapters reuse existing
 UI states; the recipient highlight compares the complete
 session/slot/generation `PlayerId`, never a label or slot alone.
+
+Each remote human has independent existing `ViewModel` playback. Admission
+resolves the loaded weapon bindings once and immediately synchronizes the
+actual selection. Authoritative fixed steps drain that actor's combat actions
+once and advance playback once; reload animation follows actual combat reload
+admission, not a denied or held input request. Death hides the weapon,
+respawn resets playback while retaining bindings, and leave/rejoin discards
+the previous life's state. No spectator playback cursor is borrowed.
+
+An optional `RecipientViewModel` owns a catalog-qualified `StudioHandle`,
+sampled `StudioPose` and finite placement matrix. Placement uses the selected
+eye plus the existing finite, host-global `SystemsConfig::view_model_offset`;
+it is not a client-local preference or wire field. Missing optional assets or
+a dead actor yield `None`.
 
 `RecipientReplica::new(catalog, epoch, recipient, limits)` binds that complete
 identity and the exact scene catalog. `apply` validates camera matrices,
 clock, ammo, roster identities/order, labels up to 32 UTF-8 bytes and existing
-scene limits before replacing scene and recipient state atomically. Stale or
-invalid candidates preserve both. Accepted frames are owned and exposed by
-immutable references without borrowing a `Game`; recreate the replica on
+scene limits. Its final fallible scene validation also checks the viewmodel's
+resource/pose and the combined world, held-model and viewmodel instance/bone
+budget once, then replaces scene, HUD and viewmodel atomically. Stale or
+invalid candidates preserve the entire previous state. Accepted frames are
+owned and exposed by immutable references without borrowing a `Game`;
+recreate the replica on
 disconnect or a catalog, epoch or recipient change. Capture, apply and UI
 projection do not tick authority or consume its input/events, AI or RNG.
 
@@ -179,9 +197,11 @@ projection do not tick authority or consume its input/events, AI or RNG.
 renderer resources. They draw from the accepted camera and frame time, with
 an explicit local FOV, fresh project near/far defaults and default lightstyles.
 The selected body's exact generational `SceneIdentity` suppresses both its
-world model and attached held model. Spectator camera, viewmodel and effects
-are excluded; `VM=None` is deliberate until per-actor first-person animation
-exists. Ordinary `render` and `render_scene` keep their existing behavior.
+world model and attached held model. The accepted viewmodel pose is borrowed
+without resampling or cursor advance and uses the standard shared studio
+resources and final depth-clear pass. Spectator camera, viewmodel cursor and
+effects are excluded. Ordinary `render` and `render_scene` keep their existing
+behavior.
 
 This is an engine prerequisite. App remote-session plumbing, independently
 loaded resource remapping and wire entity/resource mapping remain pending.

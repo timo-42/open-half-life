@@ -262,8 +262,12 @@ pub(crate) struct Bot {
     view: FreeFlyCamera,
     player: Player,
     combat: CombatState,
+    /// Independent first-person playback for an admitted human, never AI.
+    view_model: Option<crate::viewmodel::ViewModel>,
+    /// Actual reload admission, qualified by the selected weapon across switches.
+    view_model_reloading: Option<WeaponId>,
     /// The weapon code writes a scratch HUD and presentation cues. Sounds
-    /// reach the host; animation cues drive only this bot's world model.
+    /// reach the host; animation cues drive this actor's world/first-person views.
     hud: ohl_ui::hud::HudState,
     presentation: crate::presentation::Presentation,
     animation: BotAnimation,
@@ -320,6 +324,8 @@ impl Bot {
             view: FreeFlyCamera::default(),
             player: Player::default(),
             combat: CombatState::new(),
+            view_model: None,
+            view_model_reloading: None,
             hud: ohl_ui::hud::HudState::default(),
             presentation: crate::presentation::Presentation::new(),
             animation: BotAnimation::new(models),
@@ -346,14 +352,28 @@ impl Bot {
         self.remote.is_some()
     }
 
-    pub(crate) fn enable_remote(&mut self) {
+    pub(crate) fn enable_remote(&mut self, level: &Level) {
         self.remote = Some(crate::deathmatch::RemoteControl::new());
+        let mut view_model = crate::viewmodel::ViewModel::new();
+        view_model.configure(level);
+        // Also correct if the actor was already spawned before admission.
+        view_model.sync(self.selected_weapon(), self.alive());
+        self.view_model = Some(view_model);
+        self.view_model_reloading = None;
+    }
+
+    pub(crate) fn view_model(&self) -> Option<&crate::viewmodel::ViewModel> {
+        self.view_model
+            .as_ref()
+            .filter(|_| self.connected && self.is_remote() && self.alive())
     }
 
     pub(crate) fn disconnect(&mut self, level: &mut Level) {
         self.connected = false;
         self.dead_for = Some(0.0);
         self.remote = None;
+        self.view_model = None;
+        self.view_model_reloading = None;
         let _ = level.registry.world.despawn(self.entity);
     }
 
@@ -492,6 +512,10 @@ impl Bot {
         self.presentation = crate::presentation::Presentation::new();
         self.animation.reset();
         give_deathmatch_loadout(&mut self.combat);
+        if let Some(view_model) = self.view_model.as_mut() {
+            view_model.reset_playback();
+        }
+        self.view_model_reloading = None;
         self.brain.reset(self.controller.state.origin);
         self.dead_for = None;
         self.world_death = false;
@@ -514,7 +538,7 @@ impl Bot {
         if let Ok(mut gait) = level.registry.world.get::<&mut StudioGait>(self.entity) {
             gait.play(None, 1.0);
         }
-        self.update_animation(level);
+        self.update_animation(level, 0.0);
     }
 
     /// Applies one hit through the bot's own [`Player`] (HEV armour
@@ -561,6 +585,10 @@ impl Bot {
         }
         self.world_death = false;
         self.player.state.dead = true;
+        if let Some(view_model) = self.view_model.as_mut() {
+            view_model.sync(None, false);
+        }
+        self.view_model_reloading = None;
         self.controller.state.velocity = Vec3::ZERO;
         self.brain.reset(self.controller.state.origin);
         self.animation.reset();
@@ -652,8 +680,8 @@ impl Bot {
         }
     }
 
-    /// Sounds reach the host from the bot's own position. Animation cues
-    /// have already driven this bot's model and never affect the human.
+    /// Sounds reach the host from this actor's own position. The independent
+    /// animation queue is consumed by update_animation, not sound collection.
     pub(crate) fn drain_sounds(&mut self) -> Vec<ohl_gameplay::SoundCue> {
         let _ = self.presentation.drain_events();
         let origin = self.eye().to_array();
@@ -673,14 +701,26 @@ impl Bot {
 
     /// Updates the held weapon and consumes this step's combat cues after
     /// firing and pickups, so movement cannot overwrite an attack pose.
-    pub(crate) fn update_animation(&mut self, level: &mut Level) {
-        let firing = self
-            .presentation
-            .bridge
-            .drain_viewmodel_actions()
-            .any(|action| action == ohl_gameplay::ViewModelAction::Fire);
-        if self.alive() {
-            let weapon = self.selected_weapon();
+    pub(crate) fn update_animation(&mut self, level: &mut Level, dt: f32) {
+        let alive = self.alive();
+        let weapon = self.selected_weapon();
+        let actual_reloading =
+            weapon.filter(|_| self.view_model.is_some() && alive && self.combat.is_reloading());
+        if let Some(view_model) = self.view_model.as_mut() {
+            view_model.sync(weapon, alive);
+        }
+        // One ordered drain serves both first-person playback and the same
+        // third-person Fire decision as before. Sound queues stay separate.
+        let mut firing = false;
+        let mut reload_queued = false;
+        for action in self.presentation.bridge.drain_viewmodel_actions() {
+            firing |= action == ohl_gameplay::ViewModelAction::Fire;
+            reload_queued |= action == ohl_gameplay::ViewModelAction::Reload;
+            if let Some(view_model) = self.view_model.as_mut() {
+                view_model.queue_action(action);
+            }
+        }
+        if alive {
             self.animation.update(
                 level,
                 self.entity,
@@ -693,7 +733,19 @@ impl Bot {
                     on_ground: self.controller.state.on_ground,
                 },
             );
+            if let Some(view_model) = self.view_model.as_mut() {
+                // Actual reload admission currently emits a sound only. This
+                // observes the combat state transition, never the input button.
+                if actual_reloading.is_some()
+                    && actual_reloading != self.view_model_reloading
+                    && !reload_queued
+                {
+                    view_model.queue_action(ohl_gameplay::ViewModelAction::Reload);
+                }
+                view_model.tick(dt);
+            }
         }
+        self.view_model_reloading = actual_reloading;
     }
 
     /// Decides this step's input: who to fight, where to go, where to look.
@@ -1802,6 +1854,17 @@ mod tests {
         assets.insert(super::super::PLAYER_MODEL_PATH, model.clone());
         assets.insert("models/p_9mmhandgun.mdl", model.clone());
         assets.insert("models/p_crowbar.mdl", model);
+        let (view_model, _) = ohl_formats::test_support::build_minimal_mdl10_with_sequences(&[
+            "ohl_idle",
+            "ohl_deploy",
+            "ohl_shoot",
+            "ohl_reload",
+            "ohl_holster",
+        ]);
+        assets.insert(
+            crate::viewmodel::view_model_path(WeaponId::Glock),
+            view_model,
+        );
         let mut game = Game::from_map_bytes(&assets, AI_MAP, &bytes).unwrap();
         game.start_skirmish(
             &assets,
@@ -1812,6 +1875,35 @@ mod tests {
         )
         .unwrap();
         game
+    }
+
+    #[test]
+    fn admission_after_spawn_initializes_draw_and_leave_discards_playback() {
+        let mut game = visual_bot_game();
+        let (level, systems) = game.level_and_systems_mut();
+        let bot = &mut systems.skirmish.as_mut().unwrap().bots[0];
+        assert!(bot.alive());
+        assert!(bot.view_model().is_none(), "AI has no first-person state");
+        bot.enable_remote(level);
+        assert_eq!(bot.view_model().unwrap().pose_cursor(), (1, 0.0));
+        bot.view_model
+            .as_mut()
+            .unwrap()
+            .queue_action(ohl_gameplay::ViewModelAction::Fire);
+        bot.view_model.as_mut().unwrap().tick(0.05);
+        let model = bot.view_model().unwrap().model();
+        bot.die(level);
+        assert!(bot.view_model().is_none());
+        let spawn = super::SpawnPoint {
+            origin: bot.origin(),
+            yaw: 0.0,
+        };
+        bot.respawn(level, spawn);
+        assert_eq!(bot.view_model().unwrap().model(), model);
+        assert_eq!(bot.view_model().unwrap().pose_cursor(), (1, 0.0));
+        bot.disconnect(level);
+        assert!(bot.view_model.is_none());
+        assert!(bot.view_model_reloading.is_none());
     }
 
     #[test]
@@ -1832,7 +1924,7 @@ mod tests {
                 .unwrap()
                 .advance(TICK_SECONDS);
             bot.fire(level, &hitboxes, damage, TICK_SECONDS);
-            bot.update_animation(level);
+            bot.update_animation(level, TICK_SECONDS);
         };
         bot.brain.intent.attack = true;
         for _ in 0..100 {

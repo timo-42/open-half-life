@@ -1021,7 +1021,7 @@ impl SkirmishState {
             self.config.seed,
             &self.models,
         );
-        bot.enable_remote();
+        bot.enable_remote(level);
         bot.respawn(level, spawn);
         if index == self.bots.len() {
             self.bots.push(bot);
@@ -1119,6 +1119,7 @@ impl SkirmishState {
             body,
             camera,
             hud,
+            view_model: None,
             scoreboard: RecipientScoreboard {
                 rows,
                 frag_limit: (self.config.frag_limit > 0).then_some(self.config.frag_limit),

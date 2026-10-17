@@ -5,20 +5,23 @@
 //! replica binds a catalog, epoch and recipient; no implicit reconnection or
 //! resource remapping occurs. Drop it on disconnect or a binding change.
 //!
-//! This project-defined slice has no first-person animation state, audio,
-//! transient effects, runtime light-style changes, prediction or wire mapping.
+//! First-person poses come from the selected actor's own fixed-step playback.
+//! This project-defined slice has no audio, transient effects, runtime
+//! light-style changes, prediction or wire mapping.
 //! Drawing uses the supplied camera/time, project-default lighting/projection,
-//! and no viewmodel. It never calls an authority tick or consumes input/events.
+//! and owned sampled poses. It never ticks authority or consumes input/events.
 
 use std::fmt;
 
 use ohl_combat::{WeaponId, spec};
 use ohl_render::{FreeFlyCamera, LightStyles};
 use ohl_ui::{hud::HudState, scoreboard::ScoreboardState};
+use ohl_world::StudioPose;
 
 use crate::deathmatch::{MAX_PLAYERS, PlayerId};
 use crate::scene::{
     SceneCatalog, SceneEpoch, SceneError, SceneFrame, SceneIdentity, SceneLimits, SceneReplica,
+    StudioHandle,
 };
 
 /// Project player-label bound, matching deathmatch admission (UTF-8 bytes).
@@ -76,6 +79,25 @@ pub struct RecipientHud {
     pub reserve_ammo: Option<i32>,
 }
 
+/// One selected human's already sampled first-person pose and placement.
+/// Its resource belongs to the scene catalog; it has no world entity ID.
+#[derive(Clone, PartialEq)]
+pub struct RecipientViewModel {
+    pub model: StudioHandle,
+    pub pose: StudioPose,
+    pub transform: [f32; 16],
+}
+
+impl RecipientViewModel {
+    pub(crate) fn draw(&self) -> crate::viewmodel::ViewModelDraw<'_> {
+        crate::viewmodel::ViewModelDraw {
+            model_slot: self.model.local_index(),
+            pose: &self.pose,
+            transform: self.transform,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct PublicPlayerRow {
     pub id: PlayerId,
@@ -102,6 +124,8 @@ pub struct RecipientState {
     pub body: SceneIdentity,
     pub camera: RecipientCamera,
     pub hud: RecipientHud,
+    /// Missing optional assets or a dead actor show no first-person geometry.
+    pub view_model: Option<RecipientViewModel>,
     pub scoreboard: RecipientScoreboard,
 }
 
@@ -182,7 +206,14 @@ impl RecipientReplica {
         validate_state(&frame.state, self.epoch, self.recipient)?;
         // This is the final fallible operation. SceneReplica itself commits
         // only after all its validations; state replacement cannot fail.
-        self.scene.apply(frame.scene)?;
+        self.scene.apply_with_extra_studio(
+            frame.scene,
+            frame
+                .state
+                .view_model
+                .as_ref()
+                .map(|view_model| (&view_model.model, &view_model.pose)),
+        )?;
         self.state = Some(frame.state);
         Ok(())
     }
@@ -207,6 +238,7 @@ pub enum RecipientError {
     InvalidIdentity,
     InvalidCamera,
     InvalidHud,
+    InvalidViewModel,
     InvalidRoster,
     InvalidLabel,
     NoFrame,
@@ -227,6 +259,7 @@ impl fmt::Display for RecipientError {
             Self::InvalidIdentity => "invalid recipient identity",
             Self::InvalidCamera => "invalid recipient camera",
             Self::InvalidHud => "invalid recipient HUD",
+            Self::InvalidViewModel => "invalid recipient viewmodel",
             Self::InvalidRoster => "invalid recipient roster",
             Self::InvalidLabel => "invalid recipient label",
             Self::NoFrame => "no accepted recipient frame",
@@ -250,6 +283,7 @@ macro_rules! redacted_debug {
 redacted_debug!(
     RecipientCamera,
     RecipientHud,
+    RecipientViewModel,
     PublicPlayerRow,
     RecipientScoreboard,
     RecipientState,
@@ -309,6 +343,7 @@ fn validate_state(
     }
     let mut slots = [false; MAX_PLAYERS as usize];
     let mut selected = false;
+    let mut selected_alive = false;
     for row in &board.rows {
         if !valid_player(row.id) || row.id.session != recipient.session {
             return Err(RecipientError::InvalidIdentity);
@@ -318,6 +353,7 @@ fn validate_state(
         }
         slots[usize::from(row.id.slot)] = true;
         selected |= row.id == recipient;
+        selected_alive |= row.id == recipient && row.alive;
         if !valid_label(&row.name) {
             return Err(RecipientError::InvalidLabel);
         }
@@ -333,6 +369,13 @@ fn validate_state(
         })
     {
         return Err(RecipientError::InvalidRoster);
+    }
+    if let Some(view_model) = &state.view_model
+        && (!selected_alive
+            || hud.weapon.is_none()
+            || view_model.transform.iter().any(|value| !value.is_finite()))
+    {
+        return Err(RecipientError::InvalidViewModel);
     }
     Ok(())
 }
