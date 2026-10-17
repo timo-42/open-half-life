@@ -372,3 +372,10 @@ compression, fragmentation, reliable delivery, sign-on/authentication and
 ordinary-player commands remain unverified.
 This word model supplies no normal-player or complete gameplay-channel
 interoperability result.
+
+The original player reference now stops at the confirmed
+`ExplicitRetailCdKeyInput` gate described in the
+[reference ledger](GOLDSRC_PROTOCOL.md#ordinary-player-reference-gate).
+That private window observation adds no validation of these mathematical
+profiles or player traffic; the original-player baseline remains pending
+legitimate local activation.

@@ -100,14 +100,17 @@ socket, reliability state or service-reader handoff is added. The
 separates one known 48-byte control from unknown body bytes and a later
 private posthoc message-prefix comparison; neither completes sign-on.
 
-The ordinary-player reference remains gated by
-`UnclassifiedPreEngineInputDialog` after fresh short-C-path/XP64 Wine starts.
-No engine/game-client load or client protocol was observed; no traffic
-reached the owned observation endpoint. A missing-key or missing-data cause
-is unestablished. One exact-byte public-patch asset location experiment
-resolved its specific failed lookup but left all 28 compared UI category/length
-fields unchanged, with no engine/client load or owned-endpoint traffic.
-All four gameplay pairings and the player sign-on milestone remain pending.
+The ordinary-player reference stops at `ExplicitRetailCdKeyInput`, confirmed
+by readable instructions and an empty field in one verified private window
+capture. Its actual image-path lookup succeeded for that run; no engine or
+game-client role loaded and no traffic reached the owned endpoint. Earlier
+short-C-path/XP64 and exact-byte asset-location observations established only
+the historical `UnclassifiedPreEngineInputDialog` category. The location
+correction resolved its specific lookup while 28 UI category/length fields
+stayed unchanged. The [reference ledger](GOLDSRC_PROTOCOL.md#ordinary-player-reference-gate)
+records the later capture and its limits. The original-player baseline,
+all four gameplay pairings and player sign-on remain pending legitimate
+local activation; Rust and protocol implementation can continue independently.
 
 `ohl-engine::deathmatch::Deathmatch` is a separate authoritative gameplay
 adapter over the existing skirmish simulation. It has no socket or dependency

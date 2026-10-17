@@ -9886,9 +9886,9 @@ conformance, without fitting. Six new synthetic tests bring focused locked
 targeted formatting and diff checks passed. Earlier workspace totals retain
 their checkpoint scope.
 
-The player reference gate is `UnclassifiedPreEngineInputDialog` after
-bounded fresh short-C-path starts, including Wine's XP64 setting, with unchanged
-staged hashes.
+At this checkpoint the player reference gate was
+`UnclassifiedPreEngineInputDialog` after bounded fresh short-C-path starts,
+including Wine's XP64 setting, with unchanged staged hashes.
 No engine/game-client load or client protocol was observed, and no traffic
 reached the owned observation endpoint. No missing-key/data cause is
 established, and no installer or ISO code/scripts were executed. All four
@@ -9950,11 +9950,12 @@ No build-time executable digest was retained; the
 association limit and complete capture/executable hashes. This verifies
 metadata queries only; all four gameplay pairings remain pending.
 
-The separate original-player file/loader probe and one exact-byte public-patch
-asset location experiment resolved a specific failed lookup but left all
+The separate pre-pixel original-player file/loader probe and one exact-byte
+public-patch asset location experiment resolved a specific failed lookup but left all
 28 compared UI category/length fields unchanged. No engine/client load or
-owned-endpoint traffic appeared. `UnclassifiedPreEngineInputDialog` remains,
-with no missing-key/data diagnosis, unknown input or further remedy.
+owned-endpoint traffic appeared. Those observations retained the historical
+`UnclassifiedPreEngineInputDialog` category without a missing-key/data diagnosis,
+unknown input or further remedy.
 
 ### Explicit protocol-46 reverse word profile
 
@@ -10040,7 +10041,23 @@ Final `cargo test --workspace --locked` for this unit passed 3,388 tests with
 38 ignored across 259 result summaries. Workspace formatting, strict locked
 workspace/all-target Clippy and cargo-deny passed; the lockfile is unchanged.
 The previous 3,373 passed / 38 ignored / 258 summaries remain prior-checkpoint
-results. The original
-player gate remains `UnclassifiedPreEngineInputDialog`; no further Windows
-reference run or ordinary-player sign-on is added. All four gameplay pairings
-remain pending.
+results. At that checkpoint the original-player gate was still
+`UnclassifiedPreEngineInputDialog`, with no ordinary-player sign-on recorded.
+
+### Original-player gate confirmed by private pixels (2026-10-17)
+
+One separately reviewed original-client start now establishes
+`ExplicitRetailCdKeyInput` from explicit readable instructions and an empty
+field in one owned private image. The image-path lookup succeeded in that
+run. Six native runtime modules matched their origin catalog; no engine or
+game-client role loaded and no traffic reached the owned endpoint. Cleanup,
+endpoint/log checks and all 1,276 stage hashes, including 80 code/config
+entries, passed. The [reference ledger](GOLDSRC_PROTOCOL.md#ordinary-player-reference-gate)
+records the image/result/review hashes, measured bounds and retained wrapper
+summary correction.
+
+The original-player baseline and all four gameplay pairings remain pending
+legitimate local activation. Retail keys stay local; none was collected or
+entered. Rust and protocol work can continue independently. The preceding
+code-validation totals retain their checkpoint scope; this documentation
+update adds no implementation or repeated workspace test run.

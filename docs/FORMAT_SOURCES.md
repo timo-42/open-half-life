@@ -9019,14 +9019,17 @@ public-table prefix check. That check stops at the first unsupported opcode;
 it is not a complete payload, sign-on or ordinary-player result. Original
 content stays private; new tests contain authored synthetic vectors only.
 
-The current ordinary-player gate is `UnclassifiedPreEngineInputDialog`:
-fresh short-C-path/XP64 Wine starts observed no engine/game-client load or
-client protocol and no traffic at the owned observation endpoint. A later
-file/loader trace and one exact-byte public-patch asset location experiment
-resolved a specific lookup but left all 28 compared UI category/length fields
-unchanged, with the same gate. No missing-key or missing-data cause is
-established. Raw identities, asset contents, traces and UI text stay private;
-this supplies no authentication, sign-on or gameplay result.
+Earlier short-C-path/XP64 and exact-byte asset-location observations supplied
+only the historical `UnclassifiedPreEngineInputDialog` category. The location
+experiment resolved one lookup while 28 compared UI category/length fields
+stayed unchanged, without a cause diagnosis. One later verified private
+displayed-window capture now establishes `ExplicitRetailCdKeyInput` from
+readable instructions and an empty field. The
+[reference-gate ledger](GOLDSRC_PROTOCOL.md#ordinary-player-reference-gate)
+records whole-artifact hashes, actual image-path lookup, loader-phase and
+cleanup evidence. Raw UI text, pixels and any retail key remain private.
+This supplies no authentication, sign-on or gameplay result; legitimate
+activation remains local.
 
 ## Release ZIP dependency maintenance (2026-10-17)
 

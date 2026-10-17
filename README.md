@@ -271,6 +271,12 @@ pickups, scoring and respawn. Original gameplay framing, deltas, movement,
 prediction and authentication remain unfinished. See [the protocol evidence
 and remaining work](docs/GOLDSRC_PROTOCOL.md) for measured scope and limits.
 
+The original player reference currently stops at `ExplicitRetailCdKeyInput`,
+confirmed by a reviewed private window capture. The original-player baseline
+and all four gameplay pairings remain pending legitimate local activation.
+Retail keys stay local; Rust and protocol implementation work can continue
+independently. See the [reference gate](docs/GOLDSRC_PROTOCOL.md#ordinary-player-reference-gate).
+
 **Headless screenshots**, for a machine with no display server (a GPU
 adapter is still required):
 

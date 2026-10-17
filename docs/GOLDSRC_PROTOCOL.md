@@ -126,13 +126,13 @@ establish neither distinct NIC packets nor original wire timing. Raw payloads
 and native text remain private.
 
 The public-update-only client stage's executable/config origins matched
-verified extracted entries plus project-authored configuration. The current
-reference gate is `UnclassifiedPreEngineInputDialog`: the initial two fresh
+verified extracted entries plus project-authored configuration. The initial
+reference gate was `UnclassifiedPreEngineInputDialog`: two fresh
 short-C-drive starts, including Wine's documented Windows XP64 setting,
 retained matching stage hashes but observed no engine/game-client load or client
 protocol. No UDP reached the owned observation endpoint; this is not a
-system-wide traffic measurement. The dialog's cause is unclassified, with
-no established missing-key or missing-data diagnosis. Owned processes were
+system-wide traffic measurement. Those observations did not classify the
+dialog's cause or establish a missing-key/data diagnosis. Owned processes were
 stopped; no installer, ISO code or ISO scripts were executed.
 
 A later bounded file/loader trace found one unique verified public-patch asset
@@ -140,8 +140,46 @@ at a different location. One isolated exact-byte copy to the absent requested
 location changed that lookup to four nonerror resolutions. All 28 compared
 PID-owned UI category/length fields stayed unchanged across three samples;
 there was no engine/game-client load or traffic at the owned endpoint.
-The gate persists, with no missing-key/data diagnosis or observed startup
+Those pre-pixel observations supplied no missing-key/data diagnosis or startup
 remedy. Original data, identities and UI text remain private.
+
+### Ordinary-player reference gate
+
+The current gate is `ExplicitRetailCdKeyInput`. Exactly one original-client
+start produced one verified private 400x190 displayed-window image of 304,054
+bytes. Explicit readable instructions and an empty input field establish
+the category; it is not inferred from control counts. The private viewing
+PNG was verified RGB-identical to the source BMP. The actual reference-process
+image-path lookup succeeded for this run only.
+
+The loader trace matched six native runtime modules to their verified origin
+catalog, with zero engine-role or game-client-role loads and no unmatched
+owned-stage loads. The controller exited 0 after 9,096 ms internally and
+9,514 ms under its supervisor. Eight OS children exited 0; the original
+launcher ended with -15 during owned cleanup. All known owned groups were
+absent, the endpoint was free, logs were closed and all 1,276 stage hashes,
+including 80 code/config entries, matched. No UDP reached the owned endpoint.
+These are measured bounds and hash/path checks, not runtime-mode verification
+or a hard whole-controller deadline guarantee.
+
+| Whole private artifact | SHA-256 |
+| --- | --- |
+| Source displayed-window BMP | `398f807a2c5f21930cf91316b333aa7b26017c374ce6ef0364453fe346875353` |
+| Retained 002 result freeze | `a42c15e3193dea448f37bb677481489063a17b28c06b6a8301eba56fdfc25df0` |
+| Independent outcome review | `51ed1656a3d444da5b43ce30f8695776b585e2bf2ff44218d80a3bc6314e5604` |
+| Independent review freeze | `c613010823045b574006232d1bdeecc5354bf071beecbac935566439444d4328` |
+
+The prior 001 controller stopped at a mixed-output profile-readback gate
+with zero original starts. The 002 wrapper's copied 001 convenience fields
+remain preserved with an explicit correction; the actual 002 summary and
+process/capture records establish this outcome. The older cold host-prefix
+setup timeout retains its separate scope.
+
+The user was asked only about local retail activation availability. No key
+was collected or entered and no bypass was attempted. The original-player
+baseline and all four gameplay pairings remain pending legitimate local
+activation. Rust and protocol implementation work can continue independently.
+This observation supplies no authentication, sign-on or gameplay pass.
 
 ## Protocol-46 spectator packet cohorts
 
