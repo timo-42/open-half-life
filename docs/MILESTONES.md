@@ -10061,3 +10061,37 @@ legitimate local activation. Retail keys stay local; none was collected or
 entered. Rust and protocol work can continue independently. The preceding
 code-validation totals retain their checkpoint scope; this documentation
 update adds no implementation or repeated workspace test run.
+
+### Owned recipient presentation prerequisite (2026-10-17)
+
+The project-defined [`ohl-engine::recipient`](../crates/ohl-engine/src/recipient.rs)
+slice now connects authoritative deathmatch capture to an owned selected-player
+scene, private numeric HUD and public roster. `Deathmatch::capture_recipient`
+reads the real selected actor's eye/view and numeric HUD; public scoreboard
+highlighting uses the full `PlayerId`. `RecipientReplica` binds recipient,
+host epoch and exact resource catalog, with atomic scene/state replacement
+and bounded validation. Shared-catalog drawing uses accepted frame time,
+explicit local FOV, project near/far defaults and default lightstyles. It
+suppresses the selected body's exact generational model and attached held
+model. Spectator camera/effects are excluded and `VM=None` remains deliberate.
+Capture, apply, UI projection and draw do not advance authority.
+
+Locked full-engine validation passed 800 tests with six ignored across 70
+result summaries. The focused recipient suite passed 11 tests, including one
+GPU case that returns early without opt-in. Three separate
+`OHL_RENDER_GPU_TEST=1` runs passed: the new recipient pixels test verifies
+selected camera, full generational body/held suppression, no authority advance
+and resource reuse; existing scene and held-model pixel regressions also pass.
+Strict engine/all-target Clippy, workspace formatting and diff checks passed.
+The eight source/test files retain their reviewed hashes and `Cargo.lock` is
+unchanged. Final `cargo test --workspace --locked` passed 3,399 tests with 38 ignored
+across 260 result summaries. Workspace formatting, strict locked
+workspace/all-target Clippy and cargo-deny passed; cargo-deny retains 18
+`duplicate` warnings and one `license-not-encountered` warning. The earlier
+3,388/38/259 workspace totals keep their prior checkpoint scope.
+
+App remote-session integration, resource/wire mapping, serialization,
+connection, first-person weapon animation, runtime lightstyles, audio,
+transients, dynamic collision, interpolation and prediction remain pending.
+This adds no runnable host/join mode or original interoperability result.
+The retail-key gate and all four pending gameplay pairings are unchanged.

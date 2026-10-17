@@ -267,9 +267,15 @@ adds no host/join mode or automatic message-reader handoff. See the
 
 The Rust engine separately exposes dedicated deathmatch actors for up to
 32 participants, stable player identities, authoritative commands, combat,
-pickups, scoring and respawn. Original gameplay framing, deltas, movement,
-prediction and authentication remain unfinished. See [the protocol evidence
-and remaining work](docs/GOLDSRC_PROTOCOL.md) for measured scope and limits.
+pickups, scoring and respawn. Its project-defined recipient presentation API
+captures one connected human's real camera and private numeric HUD alongside
+a public roster, then accepts and draws the owned scene without advancing
+authority. It requires the same resource catalog and binds the full player
+identity and host epoch. App session plumbing and wire resource/entity mapping
+remain pending; this adds no host/join mode. See the
+[presentation architecture](docs/ARCHITECTURE.md) for scope. Original gameplay
+framing, deltas, movement, prediction and authentication remain unfinished;
+the [protocol evidence](docs/GOLDSRC_PROTOCOL.md) records measured limits.
 
 The original player reference currently stops at `ExplicitRetailCdKeyInput`,
 confirmed by a reviewed private window capture. The original-player baseline

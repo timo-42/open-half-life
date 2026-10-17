@@ -1080,6 +1080,55 @@ impl SkirmishState {
             .collect()
     }
 
+    pub(crate) fn recipient_state(
+        &self,
+        id: crate::deathmatch::PlayerId,
+        generations: &[u32],
+        epoch: crate::scene::SceneEpoch,
+    ) -> Result<crate::recipient::RecipientState, crate::recipient::RecipientError> {
+        use crate::recipient::{
+            PublicPlayerRow, RecipientError, RecipientScoreboard, RecipientState,
+        };
+        let actor = self
+            .bots
+            .get(usize::from(id.slot))
+            .ok_or(RecipientError::WrongRecipient)?;
+        let (body, camera, hud) = actor.recipient_actor(epoch)?;
+        let rows = self
+            .ranking()
+            .into_iter()
+            .filter(|slot| *slot != HUMAN_SLOT)
+            .map(|slot| {
+                let index = slot - 1;
+                let actor = &self.bots[index];
+                PublicPlayerRow {
+                    id: crate::deathmatch::PlayerId {
+                        session: id.session,
+                        slot: u8::try_from(index).unwrap_or(u8::MAX),
+                        generation: generations[index],
+                    },
+                    name: actor.name.clone(),
+                    frags: self.tallies[slot].frags,
+                    deaths: self.tallies[slot].deaths,
+                    alive: actor.alive(),
+                }
+            })
+            .collect();
+        Ok(RecipientState {
+            recipient: id,
+            body,
+            camera,
+            hud,
+            scoreboard: RecipientScoreboard {
+                rows,
+                frag_limit: (self.config.frag_limit > 0).then_some(self.config.frag_limit),
+                seconds_left: (self.config.time_limit_seconds > 0.0)
+                    .then(|| (self.config.time_limit_seconds - self.clock).max(0.0)),
+                winner_label: self.winner.map(|slot| self.name_of(slot)),
+            },
+        })
+    }
+
     /// The bot entities, for tests and dev tools.
     pub(crate) fn bot_entities(&self) -> Vec<Entity> {
         self.bots.iter().map(|bot| bot.entity).collect()

@@ -21,7 +21,9 @@ use ohl_world::{Aabb, Frustum, StudioPose};
 
 use crate::error::{EngineError, Result};
 use crate::level::Level;
-use crate::scene::{SceneBudget, SceneCatalog, SceneEpoch, SceneFrame, StudioRecord};
+use crate::scene::{
+    SceneBudget, SceneCatalog, SceneEpoch, SceneFrame, SceneIdentity, StudioRecord,
+};
 use crate::sprites::TransientSprite;
 use crate::viewmodel::{self, ViewModelFrame};
 
@@ -228,6 +230,7 @@ impl Renderers {
         gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
         tank_pulses: &[crate::tanks::LaserPulse],
         scene: Option<&SceneFrame>,
+        recipient_body: Option<SceneIdentity>,
     ) {
         let (width, height) = (target.width.max(1), target.height.max(1));
         let mut checkpoint = self.stage_timings.as_ref().map(|_| Instant::now());
@@ -246,7 +249,7 @@ impl Renderers {
 
         let depth = self.world.depth_view().cloned();
         let (studio_frame, custom_ready) =
-            self.collect_studio_instances(level, camera, gameplay_effects, scene);
+            self.collect_studio_instances(level, camera, gameplay_effects, scene, recipient_body);
         if let Some(depth) = depth.as_ref() {
             self.draw_props(
                 context,
@@ -272,17 +275,19 @@ impl Renderers {
             .render_liquid(context, camera, target.view, width, height, elapsed, 1.0);
         self.record_stage(RenderStage::Liquid, &mut checkpoint);
 
-        self.draw_visuals(
-            context,
-            level,
-            camera,
-            elapsed,
-            target,
-            transient_sprites,
-            gameplay_effects,
-            &custom_ready,
-            tank_pulses,
-        );
+        if recipient_body.is_none() {
+            self.draw_visuals(
+                context,
+                level,
+                camera,
+                elapsed,
+                target,
+                transient_sprites,
+                gameplay_effects,
+                &custom_ready,
+                tank_pulses,
+            );
+        }
         self.record_stage(RenderStage::Sprite, &mut checkpoint);
         if let Some(depth) = depth.as_ref() {
             self.draw_props(
@@ -304,10 +309,10 @@ impl Renderers {
         // drawn), so a weapon pressed against a wall is never clipped by
         // world geometry — but it can still occlude nothing after it, since
         // nothing else draws this frame.
-        if let (Some(frame), Some(depth)) = (view_model, depth.as_ref()) {
+        if let (None, Some(frame), Some(depth)) = (recipient_body, view_model, depth.as_ref()) {
             self.draw_view_model(context, level, camera, frame, depth, target);
         }
-        if let Some(fade) = gameplay_effects.fade {
+        if let Some(fade) = gameplay_effects.fade.filter(|_| recipient_body.is_none()) {
             self.fade.draw(context, target.view, fade);
         }
         self.record_stage(RenderStage::Viewmodel, &mut checkpoint);
@@ -509,9 +514,18 @@ impl Renderers {
         camera: &FreeFlyCamera,
         effects: &crate::map_effects::EffectPresentation<'_>,
         scene: Option<&SceneFrame>,
+        recipient_body: Option<SceneIdentity>,
     ) -> (Vec<StudioFrame>, BTreeSet<u64>) {
         let mut frame = if let Some(scene) = scene {
-            studio_record_frames(level, camera, scene.studios().iter().cloned())
+            studio_record_frames(
+                level,
+                camera,
+                scene
+                    .studios()
+                    .iter()
+                    .filter(|record| Some(record.identity) != recipient_body)
+                    .cloned(),
+            )
         } else {
             let collected = crate::scene::collect_studios(
                 level,
@@ -523,7 +537,7 @@ impl Renderers {
             studio_record_frames(level, camera, collected)
         };
         let mut ready = BTreeSet::new();
-        for record in effects.debris {
+        for record in effects.debris.iter().filter(|_| recipient_body.is_none()) {
             let Some((slot, transform)) = level.debris_models.placement(record) else {
                 continue;
             };
@@ -1645,6 +1659,7 @@ mod gameplay_frame_tests {
             effects,
             &[],
             None,
+            None,
         );
         target.read_rgba(context).unwrap()
     }
@@ -1665,7 +1680,13 @@ mod gameplay_frame_tests {
         renderers.debris_studio[0] = None;
         assert_eq!(
             renderers
-                .collect_studio_instances(level, camera, &systems.map_effects.presentation(), None)
+                .collect_studio_instances(
+                    level,
+                    camera,
+                    &systems.map_effects.presentation(),
+                    None,
+                    None
+                )
                 .1
                 .len(),
             6
@@ -1708,7 +1729,8 @@ mod gameplay_frame_tests {
             .snapshot(&level.registry, level.player, &level.simulation);
         let effects = systems.map_effects.presentation();
         let mut renderers = synthetic_renderers(&context, level);
-        let (frame, ready) = renderers.collect_studio_instances(level, &camera, &effects, None);
+        let (frame, ready) =
+            renderers.collect_studio_instances(level, &camera, &effects, None, None);
         assert_eq!(ready.len(), 6);
         assert_eq!(
             frame
@@ -1747,7 +1769,7 @@ mod gameplay_frame_tests {
                 .any(|effect| matches!(effect, EffectInstance::Gib { .. }))
         );
         renderers.debris_studio[0] = None;
-        let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects, None);
+        let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects, None, None);
         assert!(ready.is_empty());
         let fallback = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &effects);
         capture("custom_fallback", &fallback);
@@ -1880,7 +1902,7 @@ mod gameplay_frame_tests {
         let mut renderers = synthetic_renderers(&context, level);
         assert!(
             renderers
-                .collect_studio_instances(level, &camera, &effects, None)
+                .collect_studio_instances(level, &camera, &effects, None, None)
                 .1
                 .is_empty()
         );
@@ -1901,6 +1923,7 @@ mod gameplay_frame_tests {
             &[],
             &effects,
             &[],
+            None,
             None,
         );
         assert_eq!(
@@ -2092,6 +2115,7 @@ mod held_weapon_render_tests {
             level,
             &camera,
             &systems.map_effects.presentation(),
+            None,
             None,
         );
         let body = frame

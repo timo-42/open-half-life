@@ -156,6 +156,39 @@ collision, world-wire mapping and prediction remain outside this slice.
 Automatic Debug/errors redact identities, resource handles and poses. No
 network replication, full remote client or gameplay CLI is added.
 
+[`ohl-engine::recipient`](../crates/ohl-engine/src/recipient.rs) builds a
+project-defined selected-player view over this scene slice.
+`Deathmatch::capture_recipient(epoch, id)` produces an owned `RecipientFrame`
+for one connected human, using that actor's actual eye/view and selected
+numeric HUD. The roster carries each actor's public identity, name, score
+and alive state; numeric health, armor and ammunition come from the selected
+human. Pure `recipient::hud` and `recipient::scoreboard` adapters reuse existing
+UI states; the recipient highlight compares the complete
+session/slot/generation `PlayerId`, never a label or slot alone.
+
+`RecipientReplica::new(catalog, epoch, recipient, limits)` binds that complete
+identity and the exact scene catalog. `apply` validates camera matrices,
+clock, ammo, roster identities/order, labels up to 32 UTF-8 bytes and existing
+scene limits before replacing scene and recipient state atomically. Stale or
+invalid candidates preserve both. Accepted frames are owned and exposed by
+immutable references without borrowing a `Game`; recreate the replica on
+disconnect or a catalog, epoch or recipient change. Capture, apply and UI
+projection do not tick authority or consume its input/events, AI or RNG.
+
+`Game::render_recipient` and `Deathmatch::render_recipient` reuse the catalog's
+renderer resources. They draw from the accepted camera and frame time, with
+an explicit local FOV, fresh project near/far defaults and default lightstyles.
+The selected body's exact generational `SceneIdentity` suppresses both its
+world model and attached held model. Spectator camera, viewmodel and effects
+are excluded; `VM=None` is deliberate until per-actor first-person animation
+exists. Ordinary `render` and `render_scene` keep their existing behavior.
+
+This is an engine prerequisite. App remote-session plumbing, independently
+loaded resource remapping and wire entity/resource mapping remain pending.
+It adds no serialization, connection or playable GUI mode. Runtime
+lightstyles, sprites/transients, audio, dynamic collision, interpolation and
+prediction remain outside recipient presentation.
+
 Open Half-Life is a Rust workspace split into narrow crates under `crates/`.
 Dependencies point from high-level orchestration toward low-level services;
 `cargo xtask graph` enforces that the intra-workspace dependency graph stays

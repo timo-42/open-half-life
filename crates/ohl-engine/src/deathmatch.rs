@@ -342,6 +342,43 @@ impl Deathmatch {
     pub fn game(&self) -> &Game {
         &self.game
     }
+
+    /// Own one admitted human's camera/HUD plus public roster and world scene.
+    /// This selects no spectator state and never advances or drains authority.
+    /// First-person animation, wire mapping and prediction remain outside it.
+    ///
+    /// # Errors
+    /// Expired/foreign/bot identity, unavailable rules or invalid scene data.
+    pub fn capture_recipient(
+        &self,
+        epoch: crate::scene::SceneEpoch,
+        id: PlayerId,
+    ) -> Result<crate::recipient::RecipientFrame, crate::recipient::RecipientError> {
+        use crate::recipient::{RecipientError, RecipientFrame};
+        self.remote_index(id)
+            .map_err(|_| RecipientError::WrongRecipient)?;
+        let state = self
+            .game
+            .deathmatch_state()
+            .ok_or(RecipientError::WrongRecipient)?
+            .recipient_state(id, &self.generations, epoch)?;
+        Ok(RecipientFrame::new(self.game.capture_scene(epoch)?, state))
+    }
+
+    /// Draw this catalog's accepted recipient view; only GPU caches are mutable.
+    ///
+    /// # Errors
+    /// No frame, foreign resource catalog, invalid projection or GPU failure.
+    pub fn render_recipient(
+        &mut self,
+        context: &ohl_render::GpuContext,
+        target: crate::RenderTarget<'_>,
+        replica: &crate::recipient::RecipientReplica,
+        fov_y_degrees: f32,
+    ) -> Result<(), crate::recipient::RecipientError> {
+        self.game
+            .render_recipient(context, target, replica, fov_y_degrees)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

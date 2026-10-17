@@ -419,6 +419,54 @@ impl Bot {
         self.controller.eye_position()
     }
 
+    /// Read only this actor's actual camera and selected numeric inventory.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "finite health/armor use the same rounded saturating HUD conversion as Systems"
+    )]
+    pub(crate) fn recipient_actor(
+        &self,
+        epoch: crate::scene::SceneEpoch,
+    ) -> Result<
+        (
+            crate::scene::SceneIdentity,
+            crate::recipient::RecipientCamera,
+            crate::recipient::RecipientHud,
+        ),
+        crate::recipient::RecipientError,
+    > {
+        use crate::recipient::{RecipientCamera, RecipientError, RecipientHud};
+        if !self.player.state.health.is_finite() || !self.player.state.armor.is_finite() {
+            return Err(RecipientError::InvalidHud);
+        }
+        let weapon = self.combat.selected_weapon();
+        let clip_ammo = weapon
+            .filter(|id| spec(*id).clip_size.is_some())
+            .map(|id| i32::try_from(self.combat.clip(id)))
+            .transpose()
+            .map_err(|_| RecipientError::InvalidHud)?;
+        let reserve_ammo = weapon
+            .and_then(|id| spec(id).ammo)
+            .map(|ammo| i32::try_from(self.combat.reserve(ammo)))
+            .transpose()
+            .map_err(|_| RecipientError::InvalidHud)?;
+        Ok((
+            crate::scene::SceneIdentity::from_entity(epoch, self.entity),
+            RecipientCamera {
+                eye: self.eye().to_array(),
+                pitch: self.view.pitch,
+                yaw: self.view.yaw.rem_euclid(360.0),
+            },
+            RecipientHud {
+                health: self.player.state.health.round() as i32,
+                armor: self.player.state.armor.round() as i32,
+                weapon,
+                clip_ammo,
+                reserve_ammo,
+            },
+        ))
+    }
+
     /// The weapon in hand, for the kill feed.
     pub(crate) fn selected_weapon(&self) -> Option<WeaponId> {
         self.combat.selected_weapon()

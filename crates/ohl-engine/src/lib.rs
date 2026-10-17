@@ -34,6 +34,7 @@ mod level;
 mod map_effects;
 mod pickup_models;
 mod projectiles;
+pub mod recipient;
 mod render;
 pub mod scene;
 mod sprites;

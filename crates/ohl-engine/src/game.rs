@@ -2345,6 +2345,63 @@ impl Game {
             .map_err(|_| SceneError::Renderer)
     }
 
+    /// Draw accepted selected-player presentation using this exact catalog.
+    /// FOV is an explicit local preference; near/far use fresh project defaults.
+    /// Time/camera come from the frame, with default lightstyles and no local
+    /// camera overrides, viewmodel, transients, registry visuals or audio.
+    ///
+    /// # Errors
+    /// No accepted frame, wrong catalog, invalid projection or GPU failure.
+    pub fn render_recipient(
+        &mut self,
+        context: &GpuContext,
+        target: RenderTarget<'_>,
+        replica: &crate::recipient::RecipientReplica,
+        fov_y_degrees: f32,
+    ) -> std::result::Result<(), crate::recipient::RecipientError> {
+        use crate::recipient::RecipientError;
+        let frame = replica.frame().ok_or(RecipientError::NoFrame)?;
+        if frame.scene().catalog() != &self.scene_catalog {
+            return Err(SceneError::WrongCatalog.into());
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "viewport dimensions only determine a finite positive aspect ratio"
+        )]
+        let aspect = target.width.max(1) as f32 / target.height.max(1) as f32;
+        let camera = frame.state().camera.camera(fov_y_degrees, aspect)?;
+        if self.renderers.is_none() {
+            self.renderers = Some(
+                Renderers::new(context, &self.level, target.format, &self.scene_catalog)
+                    .map_err(|_| RecipientError::Renderer)?,
+            );
+        }
+        let effects = crate::map_effects::EffectPresentation {
+            shake: crate::map_effects::ViewShake::default(),
+            fade: None,
+            debris: &[],
+            blasts: &[],
+        };
+        self.renderers
+            .as_mut()
+            .ok_or(RecipientError::Renderer)?
+            .draw(
+                context,
+                &self.level,
+                &camera,
+                replica.light_styles(),
+                frame.scene().time(),
+                target,
+                None,
+                &[],
+                &effects,
+                &[],
+                Some(frame.scene()),
+                Some(frame.state().body),
+            );
+        Ok(())
+    }
+
     /// Draws the current frame into `target`, creating the GPU resources
     /// on first use.
     ///
@@ -2393,6 +2450,7 @@ impl Game {
             &effects,
             self.systems.tanks.laser_pulses(),
             scene,
+            None,
         );
         Ok(())
     }
