@@ -122,8 +122,6 @@ jobs:
             name: Linux x64
           - os: windows-latest
             name: Windows x64
-          - os: macos-latest
-            name: macOS Apple Silicon
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
