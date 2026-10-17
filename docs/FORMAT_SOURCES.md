@@ -8908,10 +8908,11 @@ establish complete network or deathmatch compatibility.
   and [Game Events](https://wiki.alliedmods.net/Half-Life_1_Game_Events):
   published message descriptions and field tables; no source-code listings
   were used. The bounded `ohl-net::message` reader uses 15 byte-aligned
-  opcode layouts. Primitive framing is an explicitly selected provisional
-  profile inferred from the Valve query data types above, not independent
-  svc verification: LE integer words, raw four-byte floats and NUL byte
-  strings. The contradictory user-message name width is unsupported.
+  opcode layouts. Its provisional profile was inferred from the Valve query
+  data types above: LE integer words, raw four-byte floats and NUL byte
+  strings. The later private posthoc prefix comparison below corroborates
+  only selected primitives on one prefix. The contradictory user-message
+  name width is unsupported.
   These tables do not specify the complete sequenced channel.
 - [Valve Steamworks: Distributing Your Dedicated Game Server](https://partner.steamgames.com/doc/sdk/uploading/distributing_gs),
   [User Authentication and Ownership](https://partner.steamgames.com/doc/features/auth),
@@ -8996,6 +8997,27 @@ cleanup exclusions are in the ledger/specification; original content remains
 private. Direction is caller-selected, with no reverse protocol-48 profile.
 Production-profile replay is post-implementation conformance, not a new
 held-out discovery or proof of unknown plaintext, tails or player behavior.
+
+The fourth explicit word selector,
+`ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set`, reuses the same
+frozen mathematical coefficients and loops with a matching protocol-46
+prefix and the opposite first-bit-30 guard. Its provenance is one separately
+reviewed fresh server-name-control experiment, not query-fragment prose or
+another engine's implementation. The header candidate was calibrated
+posthoc on the earlier reverse cohort, then frozen before the fresh capture.
+Its whole SHA-256 is
+`c74c00416d5a65acb7e744e8f8f3d46d704ff2d4da05a85b84fb5b43d13779d2`.
+Twenty-five candidate headers agreed; one complete authored 48-byte control
+matched at UDP `[97,145)`, spanning 11 whole mask slots and one low-counter
+byte. Other body plaintext, including 24 unmatched candidates, is unverified;
+all 51 tail bytes remain opaque. `flagged::decode_body` couples the profile
+and candidate grammar, with project guards, atomic output and no reassembly or live reader
+handoff. The [ledger](GOLDSRC_PROTOCOL.md#protocol-46-flagged-headerbody-checkpoint)
+records reviewed artifact digests, console/query association, endpoint
+retention limit, production conformance and a separately labelled posthoc
+public-table prefix check. That check stops at the first unsupported opcode;
+it is not a complete payload, sign-on or ordinary-player result. Original
+content stays private; new tests contain authored synthetic vectors only.
 
 The current ordinary-player gate is `UnclassifiedPreEngineInputDialog`:
 fresh short-C-path/XP64 Wine starts observed no engine/game-client load or

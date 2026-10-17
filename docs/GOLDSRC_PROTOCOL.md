@@ -23,9 +23,9 @@ installers from it must not be executed.
   not establish applicability to every Half-Life build.
 - **Observed** requires a repeatable black-box experiment against an
   identified, lawfully acquired runtime. No normal-player gameplay comparison
-  or decoded-channel compatibility result is recorded. Opaque official HLTV
-  proxy traffic and bounded packet-prefix correlations are recorded below;
-  the separate word-transform model has its own scoped validation record.
+  or complete decoded-channel compatibility result is recorded. Official
+  HLTV spectator prefix, known-word and candidate-header observations below
+  retain their separate measured coverage and compatibility limits.
 - **Inferred** identifies a provisional interpretation selected for an
   experiment or parser; it is not a verified original-protocol rule.
 - **Project choice** describes a proposed design, budget, or test constraint.
@@ -244,6 +244,117 @@ preservation checks. This is post-implementation conformance to the frozen
 model, not an additional held-out discovery or unknown-plaintext validation.
 No ordinary-player, sign-on, reliability or complete-header claim follows.
 
+## Protocol-46 flagged header/body checkpoint
+
+The same Linux base-plus-d-update spectator reference supplied one fresh
+flagged-packet check on 2026-10-17. The numeric header hypothesis was
+calibrated **posthoc** on the earlier reverse cohort above, then frozen before
+this fresh capture. The complete-word model and position convention were
+unchanged. A single new authored 48-byte server-name control was confirmed
+by one strict unterminated Details query **before proxy startup**: the reply
+matched the whole control, protocol 46, zero players, capacity four and the
+expected nonempty map. There was no alternate query, fallback or model fit.
+
+| Evidence artifact | Whole SHA-256 |
+| --- | --- |
+| Frozen header hypothesis | `2fbe0342a77b82313a364358b282fbd2d50342faa2fad8e98e6814b2055ee96d` |
+| Fresh complete capture | `c74c00416d5a65acb7e744e8f8f3d46d704ff2d4da05a85b84fb5b43d13779d2` |
+| Original outcome freeze | `33a1f070fdc696f0c7564f2f7477bbb5c45e70a4bbd87d733b53a0ed7e65b2a1` |
+| Independent outcome audit | `e40624e2b31904e864e81deb62570c56d01ae5c18e60582f7e9c30d179eb3229` |
+| Independent audit freeze | `467b130193513329346ad5ad96c9c5cbbf92a2d280a4850a46f82621e7ff28f7` |
+| Production API replay report | `53b4abdc4f86881a1ee54176dd820627bedbc46806a6805ebd1c737ff333e915` |
+| Production replay freeze | `7f83ce0e40d1248ce24066f7250803b8a76f118e0d15440800364ed798cb4101` |
+
+The 1,536 application-relay records form 768 byte-equal boundary pairs, with
+no orphans or send failures. Twenty-five server-to-proxy first-bit-30-set
+packets matched the frozen candidate header, with three candidate index
+sequences. One full 48-byte control matched at absolute UDP offsets
+`[97,145)`: 11 wholly known words, 11 whole mask slots, 48 byte positions and
+one low-counter byte. That packet's complete-word end was 1040, followed by
+two unknown original bytes. The other 24 selected candidates were retained
+without a whole-control match; all 51 partial-tail bytes remain unknown.
+Header consistency does not verify plaintext elsewhere in these bodies.
+The proxy log contained
+eight whole-control occurrences; that is not a count of distinct network
+deliveries. Envelopes and call-level timestamps were synthesized by the
+relay, not acquired from a NIC.
+
+Both native processes and the controller exited 0; the native envelope
+through owned cleanup was 19,049 ms. Readers finished, the relay joined and
+owned groups were absent. All 707 runtime hashes/modes, 300 preparation
+entries and 33 outcome entries remained unchanged. Four retained transport
+endpoints were independently rebound. The controller reports five internal
+rebinds, but the fifth query-local endpoint identity was not retained, so
+that exact endpoint cannot be independently rechecked.
+
+### Explicit flagged codec and bounds
+
+`WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set`
+requires the protocol-46 prefix and first bit 30 set; a clear bit yields
+`FirstBit30Clear`. The other three selectors still require it clear and
+reject set packets. The same frozen coefficients, permutation and word loops
+serve all four profiles. Neither the flag nor the prefix establishes
+direction; the caller selects the measured cohort. Encoding is only the
+mathematical inverse, with no endpoint-consumption claim.
+
+[`flagged::decode_body`](../crates/ohl-net/src/flagged.rs) requires
+`Profile::ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set`, a guarded
+`PacketPrefix` and caller storage. It selects the word profile internally,
+decodes into 1,392 stack bytes and validates this complete candidate header
+before publishing output. All offsets start at the UDP payload:
+
+| Offset | Selected candidate field / requirement |
+| --- | --- |
+| 8 | Byte 1 |
+| 9 | LE16 count, `1..=4096` |
+| 11 | LE16 one-based index, `1..=count` |
+| 13 | LE16 observed reserved zero; no offset semantics |
+| 15 | LE16 declared body length, exactly original datagram length minus 18 |
+| 17 | Byte 0 |
+
+Let `F = 8 + 4*floor((L-8)/4)` for original datagram length `L`. The whole
+header must lie in decoded complete words, requiring `F >= 20`. `DecodedBody`
+returns typed `CandidateHeader`, only body bytes `[18,F)` as `CandidateBody`,
+and the original zero-through-three-byte `OpaqueTail` separately. Declared
+length includes that unknown tail; it never becomes plaintext or padding.
+All errors preserve the complete output buffer; success preserves its unused
+suffix. Metadata/body/tail diagnostics redact packet data. Shared bounds of
+1,400 datagram bytes, both candidate counters below 2^29, 4,096 count and
+1,382 body bytes are project guards, not original maxima. Other positions
+outside `[97,145)`, keys, higher guarded counters and body ranges extrapolate
+the frozen word model. No group key, concatenation, reassembly, reliability,
+transport, command interpretation or automatic service-message handoff follows.
+
+### Scoped conformance and posthoc message prefix
+
+The locked focused crate run passed 138 tests with one original-reference
+test ignored: 15 new synthetic tests comprise 12 flagged-codec and three word
+tests. Strict all-target crate Clippy, workspace formatting and diff checks
+passed; `Cargo.lock` is unchanged. Final `cargo test --workspace --locked`
+for this unit passed 3,388 tests with 38 ignored across 259 result summaries.
+Workspace formatting, strict locked workspace/all-target Clippy and cargo-deny
+passed; deny retained 18 `duplicate` warnings and one
+`license-not-encountered` warning. The earlier 3,373/38/258 totals retain their
+prior scope.
+
+Private production-API replay matched all 25 complete-word buffers, headers,
+bodies and inverse regions, with 75 sentinel and 50 opaque-tail checks.
+The single whole 48-byte text is the independent known-plaintext support;
+other buffer comparisons establish conformance to the frozen model only.
+This is post-implementation conformance, not a new held-out discovery.
+
+An additional **posthoc private** check passed the three index-one candidate
+bodies, starting exactly at UDP 18, to the existing explicitly selected
+`MessageReader`. One yielded `Print`, `ServerInfo`, `SendExtraInfo`, then
+stopped at an unsupported opcode: 252 successfully consumed body bytes, or
+253 including the inspected stop opcode. ServerInfo's selected LE protocol
+46, capacity four, deathmatch byte one, player index below capacity, reserved
+zero and hostname equal to the authored control agreed. The other two bodies
+stopped at their first byte. This corroborates selected public-table
+primitives on one prefix, not complete payload framing, sign-on or an
+ordinary-player stream. No production flagged decoder calls the message
+reader, scans past the stop, or executes text.
+
 ## Bounded query observation
 
 On 2026-10-16 the coordinator ran the opt-in
@@ -430,8 +541,10 @@ unchanged model; the protocol-48 observations are not relabelled.
 
 The bounded codec operates on complete words after the selected eight-byte
 view and leaves a final zero-through-three-byte tail opaque. No known text
-entered that incomplete tail, so tail plaintext is unverified. First-word
-bit 30 must be clear. No packet send path, automatic svc decoding, reliable
+entered that incomplete tail, so tail plaintext is unverified. The three
+earlier selectors require first-word bit 30 clear; the separately selected
+[flagged protocol-46 cohort](#protocol-46-flagged-headerbody-checkpoint)
+requires it set. No packet send path, automatic svc decoding, reliable
 channel, authentication or normal-player compatibility follows from this
 result. Untested runtime/direction combinations, header extent,
 higher-counter/body-range applicability and complete transform variants
@@ -626,8 +739,10 @@ payload, 4,096 messages, 4,096 bytes per regular text field and 8,192 bytes for
 mapcycle text. Sign-on number 25 accepts only the documented literal byte 1;
 this does not implement a sign-on session. Opcode 39 remains unsupported
 because its published name width contradicts the accompanying prose. Tests
-use authored synthetic bytes only. No channel adapter passes recorded
-traffic to this reader, and it does not execute server-supplied commands.
+use authored synthetic bytes only. No production channel adapter feeds this
+reader. The [private posthoc prefix comparison](#scoped-conformance-and-posthoc-message-prefix)
+above preserves fail-stop behavior and supplies no live handoff or complete
+stream result. The reader does not execute server-supplied commands.
 
 The following still require admissible documentation or reviewed black-box
 evidence. Existing project code or another engine's implementation cannot

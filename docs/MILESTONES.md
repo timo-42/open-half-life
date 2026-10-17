@@ -9992,3 +9992,55 @@ and its required closure, documented in
 [the packaging provenance note](FORMAT_SOURCES.md#release-zip-dependency-maintenance-2026-10-17).
 These project checks add no ordinary-player interoperability result.
 Earlier full-workspace totals retain their original checkpoint scope.
+
+### Experimental protocol-46 flagged header/body view
+
+The new explicit
+`ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set` word selector requires
+the protocol-46 prefix and first bit 30 set. The three earlier selectors keep
+their clear-bit guard. Coefficients, permutation and complete-word loops are
+unchanged; inverse encoding establishes no endpoint-consumption claim.
+`ohl-net::flagged::decode_body` couples that selector to a candidate header,
+validates in 1,392 stack bytes before publishing only UDP `[18,F)`, and keeps
+the original partial tail separately opaque. The whole header requires
+`F >= 20`; count/index up to 4,096 and the existing datagram/counter caps are
+project guards. Errors preserve all output; automatic diagnostics redact
+metadata/body/tail. No reassembly, reliability, transport or automatic svc
+handoff is added.
+
+The numeric header hypothesis was calibrated posthoc on the earlier reverse
+cohort and frozen before one fresh server-name-control check. A single strict
+Details query confirmed all 48 authored bytes, protocol 46, zero players,
+capacity four and the expected nonempty map before proxy startup. Its 1,536
+relay records form 768 equal pairs without orphans/send failures; 25 flagged
+headers agreed across three candidate sequences. One whole control matched
+at UDP `[97,145)`: 11 known words/slots, 48 byte positions and one low-counter
+byte.
+The remaining 24 selected candidates and 51 opaque tail bytes stay unknown.
+Header agreement does not verify other body plaintext. Native exits were
+`[0,0]`, host exit 0, and cleanup finished within 19,049 ms; four exact
+transport endpoints were independently rebound versus the controller's
+five internal rebinds, whose query endpoint identity was not retained.
+The [ledger](GOLDSRC_PROTOCOL.md#protocol-46-flagged-headerbody-checkpoint)
+and [specification](GOLDSRC_TRANSFORM.md#explicit-flagged-protocol-46-word-and-headerbody-view)
+record full digests, bounds and measurement limits.
+
+Focused locked `ohl-net` validation passed 138 tests with one reference
+ignored: 12 new flagged tests and three new word tests. Strict crate Clippy,
+workspace formatting and diff checks passed; `Cargo.lock` is unchanged.
+Private production replay passed 25 word/header/body/inverse comparisons,
+75 sentinels and 50 opaque-tail checks as post-implementation conformance.
+Only the single 48-byte control supplies independent plaintext support.
+A separate private posthoc reader check found one `Print`/`ServerInfo`/
+`SendExtraInfo` prefix, then stopped after 252 successful bytes (253 including
+the inspected unsupported opcode); two other index-one bodies stop at their
+first byte. This corroborates selected public-table primitives on one prefix
+only.
+Final `cargo test --workspace --locked` for this unit passed 3,388 tests with
+38 ignored across 259 result summaries. Workspace formatting, strict locked
+workspace/all-target Clippy and cargo-deny passed; the lockfile is unchanged.
+The previous 3,373 passed / 38 ignored / 258 summaries remain prior-checkpoint
+results. The original
+player gate remains `UnclassifiedPreEngineInputDialog`; no further Windows
+reference run or ordinary-player sign-on is added. All four gameplay pairings
+remain pending.

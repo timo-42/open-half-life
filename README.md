@@ -259,6 +259,12 @@ The public `won46` CLI passed one query against the original protocol-46
 reference; this is metadata interoperability, with all four original/Rust
 client-server gameplay pairings still pending.
 
+The library also exposes an explicitly selected experimental protocol-46
+flagged header/body decoder. It validates a bounded candidate header before
+copying complete-word body bytes; final partial words remain opaque. This
+adds no host/join mode or automatic message-reader handoff. See the
+[measured coverage and limits](docs/GOLDSRC_PROTOCOL.md#protocol-46-flagged-headerbody-checkpoint).
+
 The Rust engine separately exposes dedicated deathmatch actors for up to
 32 participants, stable player identities, authoritative commands, combat,
 pickups, scoring and respawn. Original gameplay framing, deltas, movement,

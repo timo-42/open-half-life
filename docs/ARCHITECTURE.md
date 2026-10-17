@@ -71,16 +71,34 @@ with a fixed mathematical model derived from synthetic-text black-box
 experiments. Explicit protocol-46 `ExperimentalProtocol46Linux3111dHltvToHlds`
 and `ExperimentalProtocol46Linux3111dHldsToHltv` selectors share the unchanged
 coefficient table with historical `ExperimentalProtocol48HltvToHlds`.
-Both protocol-46 directions require the protocol-46 prefix; the prefix cannot
+Those three selectors require first bit 30 clear; the new explicit
+`ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set` requires it set.
+All protocol-46 selectors require the protocol-46 prefix; the prefix cannot
 identify direction, which the caller must select from its peer association.
-First bit 30 must be clear, and a foreign prefix fails before output changes.
+A foreign prefix or wrong flag fails before output changes.
 There is no reverse protocol-48 selector or direction detection. The operation
-returns candidate decoded words separately from an opaque original tail and rejects
-partial-word encoding. It constructs no prefix,
-does not send packets and does not feed the message reader. The
+returns candidate decoded words separately from an opaque original tail and
+rejects partial-word encoding. It constructs no prefix, sends no packets and
+does not feed the message reader. The
 [mathematical specification](GOLDSRC_TRANSFORM.md) distinguishes measured
 coverage from inferred use at other offsets/counters and leaves tails and
 untested runtime/direction combinations open.
+
+[`ohl-net::flagged`](../crates/ohl-net/src/flagged.rs) couples that fourth
+word selector to one dated experimental header/body view. `decode_body`
+accepts its explicit `Profile`, a guarded `PacketPrefix` and caller output.
+A 1,392-byte stack scratch buffer holds complete decoded words while the
+entire candidate header is checked; its complete-word end must be at least
+UDP offset 20. Candidate count/index, reserved zero and declared length are
+validated before copying only `[18,F)` into caller storage. The declared
+length includes the separately borrowed opaque tail. The count cap 4,096,
+1,400-byte datagram cap and counter guards below 2^29 are project bounds.
+Errors preserve the whole buffer, success preserves the unused suffix, and
+metadata/body/tail Debug output is redacted. No group identity, reassembly,
+socket, reliability state or service-reader handoff is added. The
+[evidence ledger](GOLDSRC_PROTOCOL.md#protocol-46-flagged-headerbody-checkpoint)
+separates one known 48-byte control from unknown body bytes and a later
+private posthoc message-prefix comparison; neither completes sign-on.
 
 The ordinary-player reference remains gated by
 `UnclassifiedPreEngineInputDialog` after fresh short-C-path/XP64 Wine starts.
@@ -145,7 +163,7 @@ not part of the repository).
 | crate | responsibility | std? |
 | --- | --- | --- |
 | `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
-| `ohl-net` | query clients/responders, historical ASCII codecs, bounded svc reader, experimental prefix/word codecs | std |
+| `ohl-net` | query clients/responders, historical ASCII codecs, bounded svc reader, experimental prefix/word/header-body codecs | std |
 | `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
 | `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
 | `ohl-parser-worker` | hosted binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `std`; static musl on Linux, libSystem on macOS |

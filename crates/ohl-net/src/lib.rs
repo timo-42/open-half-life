@@ -35,6 +35,7 @@
 pub mod channel;
 mod client;
 mod codec;
+pub mod flagged;
 pub mod legacy;
 pub mod message;
 pub mod server;

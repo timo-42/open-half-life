@@ -6,10 +6,11 @@
 //! use the Linux 3.1.1.1 base plus d-update spectator cohort observed 2026-10-17;
 //! native output reported
 //! protocol 46/version 3.1.1.1 without an exact build. Separate explicit selectors
-//! cover HLTV-to-HLDS and HLDS-to-HLTV with first-word bit 30 clear. No reverse
-//! protocol-48 profile is established. Header extent, message boundaries and
-//! authenticated channels remain unresolved, as does ordinary-player
-//! interoperability.
+//! cover HLTV-to-HLDS and HLDS-to-HLTV with first-word bit 30 clear, plus a
+//! separately selected HLDS-to-HLTV cohort with that bit set. No reverse
+//! protocol-48 profile is established. Complete header extent, message
+//! boundaries and authenticated channels remain unresolved, as does
+//! ordinary-player interoperability.
 //!
 //! The independently authored mathematical specification is recorded in the
 //! repository's `docs/GOLDSRC_TRANSFORM.md`. Its functional coefficients come
@@ -37,6 +38,21 @@
 //! `c7fd6f782eca67abe22a54f8d2a00244320bdcd5203f71a073aa9cb3f40eaae9`.
 //! No known text entered a partial-word tail. A preceding pilot's 63-byte prefix
 //! endpoints were measured after that run; they are separate from this holdout.
+//!
+//! The separately reviewed first-bit-30-set protocol-46 server cohort used one
+//! predeclared 48-byte synthetic control, confirmed by a strict query before
+//! proxy startup and independently present in the proxy console. The unchanged
+//! model matched that complete text in one packet: 11 wholly known words,
+//! 11 whole mask positions, 48 byte positions and one low-counter byte.
+//! Known text occupied absolute UDP 97..145 exclusive in a packet whose
+//! complete-word end was 1040; its two trailing original bytes stayed unknown.
+//! Complete-capture SHA-256 is
+//! `c74c00416d5a65acb7e744e8f8f3d46d704ff2d4da05a85b84fb5b43d13779d2`.
+//! The 25 selected packets agreed with a separately frozen candidate header;
+//! all 51 final partial-word bytes remained opaque. Unmeasured positions,
+//! keys, higher counters and longer repetitions extrapolate the same model.
+//! This selector does not itself validate that candidate header or body.
+//! Header consistency does not validate the other, unknown body bytes.
 //!
 //! Initial offsets 8..23 for protocol-48 forward, 8..13 for protocol-46 forward
 //! and 8..17 for protocol-46 reverse, other positions outside each measured
@@ -99,6 +115,12 @@ pub enum WordTransformProfile {
     /// Known text at 18..49 exclusive; other positions and unmeasured keys infer
     /// the model. No ordinary-player, tail, framing or protocol-48 reverse claim.
     ExperimentalProtocol46Linux3111dHldsToHltv,
+    /// Linux base plus d-update HLDS-to-HLTV, observed 2026-10-17, first bit 30 set.
+    /// One complete 48-byte control established 11 whole mask positions and one
+    /// low-counter byte at UDP 97..145 exclusive. Other positions, keys and
+    /// higher counters extrapolate the unchanged model. No tail plaintext or
+    /// reassembly is established.
+    ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set,
 }
 
 /// Complete transformed words, with explicit byte access and redacted Debug.
@@ -178,6 +200,7 @@ impl<'output, 'packet> DecodedFullWords<'output, 'packet> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WordTransformError {
     FirstBit30Set,
+    FirstBit30Clear,
     OutputTooSmall,
     PartialWordInput,
     DatagramLimit,
@@ -188,6 +211,9 @@ impl fmt::Display for WordTransformError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::FirstBit30Set => "first-word bit 30 is outside the experimental word profile",
+            Self::FirstBit30Clear => {
+                "first-word bit 30 is required by the experimental word profile"
+            }
             Self::OutputTooSmall => "experimental word output buffer is too small",
             Self::PartialWordInput => "experimental word encoding requires complete words",
             Self::DatagramLimit => "experimental word datagram limit exceeded",
@@ -207,15 +233,24 @@ fn validate_context(
             PrefixProfile::ExperimentalProtocol48
         }
         WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds
-        | WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltv => {
+        | WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltv
+        | WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set => {
             PrefixProfile::ExperimentalProtocol46Linux3111d
         }
     };
     if prefix.profile() != expected_prefix {
         return Err(WordTransformError::ProfileMismatch);
     }
-    if prefix.first_bit_30() {
-        return Err(WordTransformError::FirstBit30Set);
+    let first_bit_30_required = matches!(
+        profile,
+        WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set
+    );
+    if prefix.first_bit_30() != first_bit_30_required {
+        return Err(if first_bit_30_required {
+            WordTransformError::FirstBit30Clear
+        } else {
+            WordTransformError::FirstBit30Set
+        });
     }
     // PacketPrefix construction already enforces the shared datagram and both
     // candidate-counter guards. Bit 31 and second-word bit 30 do not key words.
@@ -225,8 +260,9 @@ fn validate_context(
 /// Decode complete words after the selected prefix into caller-owned output.
 ///
 /// The guarded prefix enforces the shared 1400-byte datagram/counter limits.
-/// First-word bit 30 must be clear; no meaning is assigned to second-word bit
-/// 30 or either bit 31. The original prefix and tail are never written to output.
+/// First-word bit 30 must match the explicitly selected profile: set only for
+/// the `FirstBit30Set` cohort, clear for the other three. No meaning is assigned
+/// to second-word bit 30 or either bit 31. The prefix and tail are never written.
 /// Trailing bytes remain borrowed, opaque and separate. Errors preserve all
 /// output bytes, and success writes only the returned complete-word region.
 /// The prefix protocol selector must match. It does not identify direction;

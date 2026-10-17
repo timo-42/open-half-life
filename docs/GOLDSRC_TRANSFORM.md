@@ -16,13 +16,14 @@ GoldSrc engine build number. Reviewed whole launcher/executable digests
 identify those files only; they do not fingerprint every dynamically loaded
 runtime component. Do not generalize these observations to retail/WON or
 every server advertising protocol 48. The user's ISO remained unexecuted.
-The separately measured protocol-46 cohort below has its own profile and
-uses the unchanged mathematical operation; these historical observations
-are not evidence for the user's selected pre-Steam target.
+The separate protocol-46 cohorts below use distinct profiles and the unchanged
+mathematical operation. The earlier protocol-48 observations do not validate
+the user's selected pre-Steam target.
 
 The historical protocol-48 measurement covers spectator proxy to server.
-Separate protocol-46 cohorts below cover both spectator directions, for
-selected packets with first-word bit 30 clear. The experimental
+Separate protocol-46 cohorts below cover both spectator directions with
+first-word bit 30 clear, plus an explicitly selected server-to-proxy cohort
+with that bit set. The experimental
 prefix profile projects low-30-bit candidate counters and requires both to
 be below the project guard 2^29. Counter width and wrap remain unresolved.
 The low byte used below belongs to the first candidate counter; no reliable
@@ -99,18 +100,22 @@ the server-message reader.
 The `ohl-net::word_transform` API requires an explicit word profile and a
 `PacketPrefix` from its matching prefix profile:
 
-| Prefix profile | Word profile |
-| --- | --- |
-| `ExperimentalProtocol48` | `ExperimentalProtocol48HltvToHlds` |
-| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHltvToHlds` |
-| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHldsToHltv` |
+| Prefix profile | Word profile | Required first bit 30 |
+| --- | --- | --- |
+| `ExperimentalProtocol48` | `ExperimentalProtocol48HltvToHlds` | Clear |
+| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHltvToHlds` | Clear |
+| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHldsToHltv` | Clear |
+| `ExperimentalProtocol46Linux3111d` | `ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set` | Set |
 
 The protocol-46 prefix cannot establish direction. Callers explicitly select
 it from their known peer association; there is no direction detection,
 fallback or reverse protocol-48 selector.
 
 `WordTransformError::ProfileMismatch` rejects a foreign prefix before output
-changes. `decode_full_words` writes only complete candidate words into
+changes. `FirstBit30Set` still rejects set packets for the earlier three
+selectors; `FirstBit30Clear` rejects clear packets for the fourth. The
+coefficients, permutation and mathematical word loops are unchanged.
+`decode_full_words` writes only complete candidate words into
 caller storage and returns them separately from `OpaqueTail` borrowed from
 the original input. `encode_full_words` returns encoded full words only;
 its input length is independent of the prefix's old remainder length.
@@ -122,7 +127,9 @@ them no transform or channel meaning.
 
 Applying the candidate operation to initial offsets 8 through 23 for the
 historical protocol-48 cohort, 8 through 13 for protocol-46 forward, or
-8 through 17 for protocol-46 reverse extrapolates measured known text. Higher
+8 through 17 for clear-bit-30 protocol-46 reverse extrapolates measured known
+text. The flagged cohort's only known window is `[97,145)`; other positions
+extrapolate that cohort. Higher
 counters, other low-counter bytes, longer bodies and further period repetitions
 are also inferred applicability. Synthetic-text
 windows do not verify every byte range to which a generic word operation
@@ -223,8 +230,8 @@ The 2026-10-17 Linux HLDS 3.1.1.1 base-plus-d-update spectator reference
 reported native version 3.1.1.1/protocol 46, without a confirmed build.
 [The protocol ledger](GOLDSRC_PROTOCOL.md#protocol-46-spectator-packet-cohorts)
 records its distribution hashes, baseline and synthetic-run capture digests,
-warnings and relay limits. Both spectator directions support only the
-selected prefix model; the initial forward word profile covers proxy-to-server
+warnings and relay limits. In that initial cohort, both directions were
+measured for the selected prefix model; known word text covered proxy-to-server
 packets with first bit 30 clear.
 
 The existing frozen model matched 60/60 unique authored texts, lengths
@@ -279,8 +286,9 @@ records the reference association and exclusions.
 `ExperimentalProtocol46Linux3111dHldsToHltv` selects this direction explicitly
 with the existing protocol-46 prefix and unchanged coefficient implementation.
 Initial offsets 8..17, other positions/keys, higher guarded counters and longer
-periods extrapolate the measured reverse cohort. There is no message-boundary,
-normal-player, first-bit-30 or tail-plaintext expansion.
+periods extrapolate the measured reverse cohort. That clear-bit-30 selector
+adds no message-boundary, normal-player, flagged-packet or tail-plaintext
+coverage.
 
 Separate production-profile replay passed 60 full-text matches/1,642 known
 bytes and 60 whole candidate-word buffers, inverse, sentinel and opaque-tail
@@ -300,6 +308,54 @@ and its required closure, documented in
 [the packaging provenance note](FORMAT_SOURCES.md#release-zip-dependency-maintenance-2026-10-17).
 These project checks add no ordinary-player interoperability result.
 
+### Explicit flagged protocol-46 word and header/body view
+
+A separate fresh 2026-10-17 check selected server-to-proxy first-bit-30-set
+packets. The header hypothesis was calibrated posthoc on the earlier reverse
+cohort, then frozen before this new capture. One new authored 48-byte
+server-name control was positively confirmed by a strict Details query before
+proxy startup and appeared eight times in the proxy log. The 1,536 relay
+records form 768 equal pairs without orphans or send failures; 25 flagged
+headers agree across three candidate index sequences. Whole capture SHA-256:
+`c74c00416d5a65acb7e744e8f8f3d46d704ff2d4da05a85b84fb5b43d13779d2`.
+
+The unchanged word operation matched the full control once, at UDP `[97,145)`:
+48 known bytes, 11 wholly known words, 11 whole mask slots, 48 byte positions
+and one low-counter byte. Complete-word end was 1040, with two unknown
+original tail bytes. The other 24 selected candidates and all 51 tail bytes
+have no independent plaintext validation. Header-field consistency does not
+establish the rest of any body as known text. Other positions, keys, higher guarded
+counters, longer bodies and period repetitions remain inferred applicability.
+
+The fourth `WordTransformProfile` above requires a matching protocol-46
+prefix and first bit 30 set; it changes no coefficients or word loop. Its
+inverse is mathematical only, not evidence that an endpoint accepts encoded
+output. [`ohl-net::flagged`](../crates/ohl-net/src/flagged.rs) adds a separate
+coupled `decode_body(profile, prefix, output)`: 1,392 stack bytes hold decoded
+words while the complete candidate header is validated. For complete-word
+end `F >= 20`, only `[18,F)` is published as candidate body; the original
+tail remains separately opaque and included in the declared body length.
+The header table, count/index guard of 4,096, atomic output contract and
+reproduction digests are in the
+[protocol ledger](GOLDSRC_PROTOCOL.md#protocol-46-flagged-headerbody-checkpoint).
+There is no group identity, concatenation, reassembly or live service-reader
+handoff. All metadata/body/tail automatic diagnostics are redacted.
+
+Focused locked crate validation passed 138 tests with one reference ignored,
+including 12 new flagged and three new word tests. Strict crate Clippy,
+workspace formatting and diff checks passed; the lockfile is unchanged.
+Private production replay matched all 25 word buffers, header/body views and
+inverse regions, with 75 sentinels and 50 opaque-tail checks. Unknown-buffer
+matches establish frozen-model conformance only; the single 48-byte control
+is the independent plaintext support. A separate posthoc existing-reader
+comparison corroborated one three-message public-table prefix, stopping
+after 252 successful bytes (253 including the inspected unsupported opcode).
+The other two index-one bodies stop at their first byte. This verifies no
+complete message stream or sign-on. Final `cargo test --workspace --locked`
+for this unit passed 3,388 tests with 38 ignored across 259 result summaries.
+Workspace formatting, strict locked workspace/all-target Clippy and cargo-deny
+passed. The prior 3,373/38/258 checkpoint above keeps its original scope.
+
 ## Clean-room and compatibility boundary
 
 [CLEAN_ROOM.md](CLEAN_ROOM.md) permits independent behavior observations of
@@ -310,8 +366,9 @@ intermediates, internal names and credentials. They remain local and ignored;
 tests and worked examples use authored synthetic data only. A small or
 transformed packet sample does not become a publishable fixture.
 
-Untested runtime/direction combinations, first-bit-30-set packets, general
-partial-word/tail rules, complete header extent, compression, fragmentation, reliable delivery,
-sign-on/authentication and ordinary-player commands remain unverified.
+Untested runtime/direction combinations, other flagged cohorts, unmeasured
+body/key ranges, general partial-word/tail rules, complete header extent,
+compression, fragmentation, reliable delivery, sign-on/authentication and
+ordinary-player commands remain unverified.
 This word model supplies no normal-player or complete gameplay-channel
 interoperability result.

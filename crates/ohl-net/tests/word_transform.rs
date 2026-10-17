@@ -20,6 +20,8 @@ const PROFILE46: WordTransformProfile =
     WordTransformProfile::ExperimentalProtocol46Linux3111dHltvToHlds;
 const PROFILE46_REVERSE: WordTransformProfile =
     WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltv;
+const PROFILE46_FLAGGED: WordTransformProfile =
+    WordTransformProfile::ExperimentalProtocol46Linux3111dHldsToHltvFirstBit30Set;
 const PREFIX46: PrefixProfile = PrefixProfile::ExperimentalProtocol46Linux3111d;
 const BIT_30: u32 = 1 << 30;
 const BIT_31: u32 = 1 << 31;
@@ -344,6 +346,7 @@ fn automatic_debug_and_errors_never_expose_bytes_or_counter() {
     }
     for error in [
         WordTransformError::FirstBit30Set,
+        WordTransformError::FirstBit30Clear,
         WordTransformError::OutputTooSmall,
         WordTransformError::PartialWordInput,
         WordTransformError::DatagramLimit,
@@ -503,6 +506,7 @@ fn cross_profile_word_operations_reject_before_any_output_write() {
     for (word_profile, foreign_prefix) in [
         (PROFILE46, PrefixProfile::ExperimentalProtocol48),
         (PROFILE46_REVERSE, PrefixProfile::ExperimentalProtocol48),
+        (PROFILE46_FLAGGED, PrefixProfile::ExperimentalProtocol48),
         (PROFILE, PREFIX46),
     ] {
         for first_flags in [0, BIT_30] {
@@ -578,4 +582,124 @@ fn protocol46_word_profile_preserves_flag_length_and_capacity_guards() {
         );
         assert_eq!(output, [0xCF; 12]);
     }
+}
+
+#[test]
+fn flagged_protocol46_uses_manual_word_vector_with_all_opaque_flag_combinations() {
+    // Same independently worked s=8/q=5A model vector, with the new explicit
+    // first-bit-30-set selector. No flag-dependent coefficient is introduced.
+    for first_31 in [0, BIT_31] {
+        for second_flags in [0, BIT_30, BIT_31, BIT_30 | BIT_31] {
+            let bytes = packet(
+                BIT_30 | first_31 | 0x5A,
+                second_flags | 0x11,
+                &CIPHER_VECTOR,
+            );
+            let original = bytes.clone();
+            let context = prefix_with_profile(PREFIX46, &bytes);
+            let mut output = [0xD1; 10];
+            let decoded = decode_full_words(PROFILE46_FLAGGED, context, &mut output[2..8]).unwrap();
+            assert_eq!(decoded.complete_words().as_bytes(), PLAIN_VECTOR);
+            assert!(decoded.opaque_tail().is_empty());
+            assert_eq!(&output[..2], &[0xD1; 2]);
+            assert_eq!(&output[6..], &[0xD1; 4]);
+
+            let mut output = [0xD2; 10];
+            let encoded =
+                encode_full_words(PROFILE46_FLAGGED, context, &PLAIN_VECTOR, &mut output[1..7])
+                    .unwrap();
+            assert_eq!(encoded.as_bytes(), CIPHER_VECTOR);
+            assert_eq!(output[0], 0xD2);
+            assert_eq!(&output[5..], &[0xD2; 5]);
+            assert_eq!(bytes, original);
+        }
+    }
+}
+
+#[test]
+fn flagged_protocol46_keeps_partial_tails_opaque_and_excludes_them_from_inverse() {
+    for tail_length in 0..=3 {
+        let tail = &[0xD7, 0xE8, 0xF9][..tail_length];
+        let mut bytes = packet(BIT_30 | 0x5A, 0, &CIPHER_VECTOR);
+        bytes.extend_from_slice(tail);
+        let context = prefix_with_profile(PREFIX46, &bytes);
+        let mut output = [0xD3; 12];
+        let decoded = decode_full_words(PROFILE46_FLAGGED, context, &mut output[3..]).unwrap();
+        assert_eq!(decoded.complete_words().as_bytes(), PLAIN_VECTOR);
+        assert_eq!(decoded.opaque_tail().as_bytes(), tail);
+        assert_eq!(
+            decoded.opaque_tail().as_bytes().as_ptr(),
+            bytes[12..].as_ptr()
+        );
+        assert_eq!(&output[..3], &[0xD3; 3]);
+        assert_eq!(&output[7..], &[0xD3; 5]);
+        let mut encoded = [0xD4; 12];
+        let words =
+            encode_full_words(PROFILE46_FLAGGED, context, &PLAIN_VECTOR, &mut encoded).unwrap();
+        assert_eq!(words.as_bytes(), CIPHER_VECTOR);
+        assert_eq!(&encoded[4..], &[0xD4; 8]);
+
+        let bytes = packet(BIT_30 | 0x5A, 0, tail);
+        let mut output = [0xD5; 8];
+        let decoded = decode_full_words(
+            PROFILE46_FLAGGED,
+            prefix_with_profile(PREFIX46, &bytes),
+            &mut output,
+        )
+        .unwrap();
+        assert!(decoded.complete_words().is_empty());
+        assert_eq!(decoded.opaque_tail().as_bytes(), tail);
+        assert_eq!(output, [0xD5; 8]);
+    }
+}
+
+#[test]
+fn flagged_protocol46_requires_set_bit_and_retains_all_atomic_word_guards() {
+    let bytes = packet(0x5A, 0, &CIPHER_VECTOR);
+    let context = prefix_with_profile(PREFIX46, &bytes);
+    let mut output = [0xD6; 12];
+    assert_eq!(
+        decode_full_words(PROFILE46_FLAGGED, context, &mut output).unwrap_err(),
+        WordTransformError::FirstBit30Clear
+    );
+    assert_eq!(
+        encode_full_words(PROFILE46_FLAGGED, context, &PLAIN_VECTOR, &mut output).unwrap_err(),
+        WordTransformError::FirstBit30Clear
+    );
+    assert_eq!(output, [0xD6; 12]);
+
+    let bytes = packet(BIT_30 | 0x5A, 0, &CIPHER_VECTOR);
+    let context = prefix_with_profile(PREFIX46, &bytes);
+    for length in 1..=3 {
+        assert_eq!(
+            encode_full_words(
+                PROFILE46_FLAGGED,
+                context,
+                &PLAIN_VECTOR[..length],
+                &mut output
+            )
+            .unwrap_err(),
+            WordTransformError::PartialWordInput
+        );
+        assert_eq!(output, [0xD6; 12]);
+    }
+    assert_eq!(
+        decode_full_words(PROFILE46_FLAGGED, context, &mut output[..3]).unwrap_err(),
+        WordTransformError::OutputTooSmall
+    );
+    assert_eq!(
+        encode_full_words(PROFILE46_FLAGGED, context, &PLAIN_VECTOR, &mut output[..3]).unwrap_err(),
+        WordTransformError::OutputTooSmall
+    );
+    assert_eq!(
+        encode_full_words(
+            PROFILE46_FLAGGED,
+            context,
+            &vec![0; MAX_FULL_WORD_BYTES + 4],
+            &mut output
+        )
+        .unwrap_err(),
+        WordTransformError::DatagramLimit
+    );
+    assert_eq!(output, [0xD6; 12]);
 }
